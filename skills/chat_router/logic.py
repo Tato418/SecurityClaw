@@ -68,32 +68,41 @@ Available skills:
 {skills_description}
 
 ROUTING GUIDELINES:
-- If asking to INVESTIGATE AN INCIDENT or RECONSTRUCT A TIMELINE (what happened, sequence of events, 
-  before/after an incident, timeline around an event), use forensic_examiner to build a ±5 min timeline 
-  linking DNS → network flows → alerts.
-- If asking for THREAT INTELLIGENCE or REPUTATION DATA (threat intel, threat score, reputation, 
-  AbuseIPDB, VirusTotal, malicious status, threat level, is it malicious), use threat_analyst 
-  to fetch external reputation from AbuseIPDB, AlienVault, VirusTotal, Talos.
-- If the question asks for SPECIFIC FIELDS or ATTRIBUTES (when, where, how, port, protocol, etc.) 
-  from previously found data, use rag_querier to extract those details.
-- If the question is a FOLLOW-UP about data mentioned in history (even if rephrased), 
-  likely needs rag_querier to query/extract from that data.
-- Questions about TIMING (when did X happen, what time, date, timestamp) require rag_querier 
-  to extract temporal data from logs.
-- Questions about LOCATION/SOURCE (where from, who, what country) require rag_querier 
-  to search geographic fields.
+
+PRIMARY ROUTING RULES (Use These First):
+1. **SEARCH FOR SPECIFIC TRAFFIC/LOGS**: Any question about "traffic from X", "connections to Y", 
+   "flows from Z", "data from [country/region/IP]", "logs matching X criteria" → rag_querier
+   Examples: "traffic from iran", "connections to russia on port 443", "any flows from 192.168.0.x"
+   
+2. **GEOGRAPHIC/LOCATION FILTERING**: Questions asking "from country X", "to location Y", 
+   "originated in Z region" → rag_querier (searches geoIP fields for country-based filtering)
+   Examples: "traffic from iran", "any requests from north korea", "all connections from eastern europe"
+
+3. **TEMPORAL DATA EXTRACTION**: "when did X happen", "at what time", "on what date", 
+   "in February", "last week", "past 3 months" → rag_querier (extracts time-filtered logs)
+   Examples: "traffic from iran in february", "any flows in the past 3 months", "when did this start"
+
+4. **PROTOCOL/PORT FILTERING**: "on port X", "using protocol Y", "traffic on 1194", 
+   "connections via TCP" → rag_querier (narrows down by technical attributes)
+   Examples: "port 443 traffic from iran", "connections on port 1194"
+
+SECONDARY ROUTING RULES:
+- If asking to INVESTIGATE AN INCIDENT or RECONSTRUCT A TIMELINE (what happened, sequence of events),
+  use forensic_examiner to build a ±5 min timeline.
+- If asking for THREAT INTELLIGENCE or REPUTATION DATA (is IP malicious, threat score, threat level),
+  use threat_analyst for external reputation checks.
 - If asking for DEEPER ANALYSIS of found anomalies, use anomaly_watcher or threat_analyst.
-- Skills can be chained if needed (e.g., forensic_examiner then threat_analyst for timeline + reputation).
+- Skills can be chained if needed (e.g., rag_querier then threat_analyst to get data then analyze it).
 
-Respond with ONLY a JSON object (no markdown, no extra text):
+KEY PRIORITY: Questions like "traffic from X in Y timeframe" MUST route to rag_querier FIRST 
+to search/filter logs, even if threat analysis is also needed.
+
+ALWAYS ANSWER WITH A JSON OBJECT (strictly, no markdown):
 {{
-  "reasoning": "Why you chose these skills (consider history context, field extraction needs)",
+  "reasoning": "Why you chose these skills (mention which guidelines matched)",
   "skills": ["skill_name_1", "skill_name_2"],
-  "parameters": {{"question": "{user_question}", "any_param": "value"}}
-}}
-
-If question asks for specific data/fields from previously found records, include rag_querier.
-Always include the user question in parameters."""
+  "parameters": {{"question": "{user_question}"}}
+}}"""
 
     messages = [
         {"role": "system", "content": instruction},

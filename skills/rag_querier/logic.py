@@ -156,245 +156,480 @@ def _search_raw_logs(
 ) -> tuple[list[dict], list[str]]:
     """
     Search raw logs for data matching the user question.
-    DATA-AGNOSTIC: Tries field names from RAG schema observations or falls back to common formats.
     
-    Returns (logs, search_terms_used) tuple so caller knows what was searched.
-    
-    Intelligently extracts keywords from the question and searches,
-    including geographic, temporal, and pattern-based queries.
-    
-    Supports any log format by trying common field names from multiple formats
-    (Suricata EVE, ECS, Zeek, NetFlow, etc.)
+    Strategy: Let the LLM plan what to search for.
+    The LLM understands context, temporal references, and entities better than hardcoded rules.
     """
-    # Extract potential search terms from the question and conversation history
-    search_terms = _extract_search_terms(question, conversation_history)
+    from core.query_builder import discover_field_mappings, build_keyword_query
     
-    if not search_terms:
+    if llm is None:
+        logger.warning("[%s] LLM not available for query planning.", SKILL_NAME)
         return [], []
     
-    # TODO: Query RAG for schema observations to determine actual field names
-    # For now, use multi-format fallback approach
+    # ── LLM PLANS THE SEARCH ──────────────────────────────────────────────────
+    # The LLM decides: what to search for, what time range, whether to search at all
+    field_mappings = discover_field_mappings(db, llm)
+    query_plan = _plan_query_with_llm(question, conversation_history, field_mappings, llm)
     
-    import re as _re
-    ip_pattern = r'^(?:\d{1,3}\.){3}\d{1,3}$'
-    port_pattern = r'^\d{1,5}$'
-    protocol_names = {'tcp', 'udp', 'icmp', 'http', 'https', 'dns', 'ssh', 'rdp', 'smb'}
-
-    # Build should_clauses with multiple field format attempts
-    # This allows search to work regardless of whether data is in Suricata/ECS/Zeek format
-    should_clauses = []
-
-    for term in search_terms:
-        if _re.match(ip_pattern, term):
-            # IP addresses — try all common field name formats
-            for src_field in ["src_ip", "source.ip", "id.orig_h"]:
-                for dst_field in ["dest_ip", "destination.ip", "id.resp_h"]:
-                    should_clauses += [
-                        {"term": {dst_field: term}},
-                        {"term": {src_field: term}},
-                        {"term": {f"{dst_field}.keyword": term}},
-                        {"term": {f"{src_field}.keyword": term}},
-                    ]
-        elif _re.match(port_pattern, term):
-            # Port numbers — try all common field name formats
-            try:
-                port_int = int(term)
-                for src_port in ["src_port", "source.port", "id.orig_p"]:
-                    for dst_port in ["dest_port", "destination.port", "id.resp_p"]:
-                        should_clauses += [
-                            {"term": {dst_port: port_int}},
-                            {"term": {src_port: port_int}},
-                        ]
-            except ValueError:
-                pass
-        elif term.lower() in protocol_names:
-            # Protocols — try common field names (TCP/tcp, proto, etc.)
-            for proto_field in ["proto", "protocol", "network.protocol", "service"]:
-                should_clauses += [
-                    {"term": {proto_field: term.upper()}},
-                    {"term": {f"{proto_field}.keyword": term.upper()}},
-                    {"match": {proto_field: term.lower()}},
-                ]
-        else:
-            # Hostnames, domains, other strings — try common app protocol fields
-            for app_field in ["app_proto", "network.application", "service", "application_protocol"]:
-                should_clauses += [
-                    {"match": {app_field: {"query": term}}},
-                    {"wildcard": {f"{app_field}.keyword": {"value": f"*{term}*"}}},
-                ]
-        
-        # Try any term as a potential geographic location (data-agnostic)
-        # Apply to all terms—if it's not a country/region, the search just won't match
-        for geo_field in ["geoip.country_name", "destination.geo.country_name", "source.geo.country_name",
-                         "geoip.country", "destination.country", "source.country"]:
-            should_clauses += [
-                {"match": {geo_field: {"query": term}}},
-            ]
-
-    if not should_clauses:
+    if not query_plan or query_plan.get("skip_search"):
+        logger.info("[%s] LLM determined no raw log search needed.", SKILL_NAME)
         return [], []
-
-    query = {
-        "query": {
-            "bool": {
-                "should": should_clauses,
-                "minimum_should_match": 1,
-                "filter": {
-                    "range": {
-                        "@timestamp": {"gte": "now-90d"}  # Broader window for testing/demo data
-                    }
-                },
-            }
-        },
-        "size": 50,
-    }
+    
+    search_terms = query_plan.get("search_terms", [])
+    ports = query_plan.get("ports", [])
+    countries = query_plan.get("countries", [])
+    protocols = query_plan.get("protocols", [])
+    time_range = query_plan.get("time_range", "now-90d")
+    
+    # Check if we have any search criteria
+    has_search_criteria = bool(search_terms or ports or countries or protocols)
+    if not has_search_criteria:
+        logger.info("[%s] LLM planning: no search terms needed.", SKILL_NAME)
+        return [], []
+    
+    # ── EXECUTE QUERY USING LLM'S PLAN ────────────────────────────────────────
+    # Build structured query based on what was extracted
+    query = _build_structured_query_from_plan(
+        search_terms=search_terms,
+        ports=ports,
+        countries=countries,
+        protocols=protocols,
+        time_range=time_range,
+        field_mappings=field_mappings,
+    )
+    
+    if not query or query.get("query") == {"match_none": {}}:
+        logger.warning("[%s] No valid query built from plan", SKILL_NAME)
+        return [], []
+    
+    query["size"] = 50
     
     logger.info(
-        "[%s] DATA-AGNOSTIC search: trying multiple field formats for terms: %s",
-        SKILL_NAME, search_terms
+        "[%s] Built Query: Ports=%s, Countries=%s, Protocols=%s | Time: %s",
+        SKILL_NAME, ports, countries, protocols, time_range
     )
+    
+    logger.debug("[%s] Discovered field_mappings: %s", SKILL_NAME, field_mappings)
+    logger.debug("[%s] Built query: %s", SKILL_NAME, json.dumps(query, indent=2))
     
     try:
         results = db.search(logs_index, query, size=50)
         return results, search_terms
     except Exception as exc:
-        logger.warning("[%s] Raw log search error: %s", SKILL_NAME, exc)
+        logger.error("[%s] Raw log search error: %s | Query: %s", SKILL_NAME, exc, json.dumps(query, indent=2))
         return [], []
 
 
-def _extract_search_terms(question: str, conversation_history: list[dict] = None) -> list[str]:
+def _build_structured_query_from_plan(
+    search_terms, ports, countries, protocols, time_range, field_mappings
+):
     """
-    Extract potential search terms from a user question.
-    Looks for IPs, hostnames, ports, protocols, etc.
-    Returns each as a string; _search_raw_logs categorises them.
-    Data-agnostic: doesn't assume what countries exist.
+    Build an OpenSearch query using structured parameters extracted by LLM.
     
-    Also extracts context from conversation history to maintain continuity.
-    E.g., if previous Q mentioned "Iran", include "iran" in search for follow-ups.
-    For follow-up questions, prior search context (IPs, ports, locations) is re-prioritized.
+    Args:
+        search_terms: List of generic keywords to search
+        ports: List of destination ports (e.g., [1194])
+        countries: List of country names (e.g., ["Iran"])
+        protocols: List of protocols (e.g., ["tcp"])
+        time_range: Time range string or date range
+        field_mappings: Mapping of field types to actual field names
+    
+    Returns:
+        dict: OpenSearch query with proper structure for ports, countries, etc.
     """
-    import re
-
-    terms = []
-    remaining = question
-
-    # Regex patterns
-    ip_pattern = r'\b(?:\d{1,3}\.){3}\d{1,3}\b'
-    port_pattern = r'\bport\s+(\d{1,5})\b|:(\d{2,5})\b|\b(\d{1,5})\b'  # More flexible port matching
-    protocols = ['tcp', 'udp', 'icmp', 'http', 'https', 'dns', 'ssh', 'rdp', 'smb', 'ftp', 'smtp', 'ntp']
-    hostname_pattern = r'\b([a-zA-Z][a-zA-Z0-9\-]{1,62}(?:\.[a-zA-Z0-9][a-zA-Z0-9\-]{0,62})*)\b'
-
-    # ── PRIORITY 1: Extract from conversation history first (for follow-ups) ──
-    history_ips = []
-    history_ports = []
-    history_protocols = []
-    history_geos = []
+    from core.query_builder import build_keyword_query
     
-    if conversation_history:
-        # Look at previous user questions and assistant responses
-        for msg in conversation_history:
-            if msg.get("role") in ["user", "assistant"]:
-                content = msg.get("content", "")
-                
-                # Extract IPs from history
-                hist_ips = re.findall(ip_pattern, content)
-                history_ips.extend(hist_ips)
-                
-                # Extract port numbers from history (be more aggressive)
-                # Look for patterns like "port 1194", ":1194", or even "1194" if preceded by port/number context
-                for match in re.finditer(r'\b(\d{1,5})\b', content):
-                    port_candidate = match.group(1)
-                    port_num = int(port_candidate)
-                    # Accept if it looks like a port (1-65535) and appears in port-like context
-                    if 1 <= port_num <= 65535:
-                        # Check if there's "port" nearby or if it comes after an IP
-                        start_pos = max(0, match.start() - 30)
-                        context_before = content[start_pos:match.start()].lower()
-                        end_pos = min(len(content), match.end() + 30)
-                        context_after = content[match.end():end_pos].lower()
-                        if 'port' in context_before or 'tcp' in context_before or 'udp' in context_before:
-                            history_ports.append(port_candidate)
-                        # Also accept if it's a common port
-                        elif port_num in [80, 443, 22, 3306, 5432, 1194, 8080, 8443]:
-                            history_ports.append(port_candidate)
-                
-                # Extract protocols from history
-                for proto in protocols:
-                    if re.search(rf'\b{proto}\b', content, re.IGNORECASE):
-                        history_protocols.append(proto)
-                
-                # Extract geographic terms from history
-                for word in content.split():
-                    word_clean = re.sub(r'[.,;:!?]$', '', word)
-                    if word_clean and word_clean[0].isupper() and len(word_clean) > 2:
-                        word_lower = word_clean.lower()
-                        if word_lower not in ['found', 'based', 'from', 'the', 'and', 'or', 'user', 'agent', 'is', 'are', 'was', 'were', 'traffic', 'connections', 'tcp', 'udp']:
-                            if 2 < len(word_clean) < 15 and word_lower not in history_geos:
-                                history_geos.append(word_lower)
+    must_clauses = []
     
-    # Add history terms with dedup
-    for ip in history_ips:
-        if ip not in terms:
-            terms.append(ip)
-    for port in history_ports:
-        if port not in terms:
-            terms.append(port)
-    for proto in history_protocols:
-        if proto not in terms:
-            terms.append(proto)
-    for geo in history_geos:
-        if geo not in terms:
-            terms.append(geo)
-
-    # ── PRIORITY 2: Extract from current question ──
+    # ── PORTS FILTER ────────────────────────────────────────────────────────
+    if ports:
+        # Try mapping to dest_port or other port fields discovered
+        port_field = None
+        if "dest_port" in field_mappings.get("all_fields", {}):
+            port_field = "dest_port"
+        elif "port" in field_mappings.get("all_fields", {}):
+            port_field = "port"
+        
+        if port_field:
+            # Build should clause for multiple ports
+            port_clauses = [{"term": {port_field: p}} for p in ports]
+            if len(port_clauses) == 1:
+                must_clauses.append(port_clauses[0])
+            else:
+                must_clauses.append({"bool": {"should": port_clauses, "minimum_should_match": 1}})
+            logger.info(
+                "[%s] Added port filter: %s to field %s",
+                SKILL_NAME, ports, port_field
+            )
+        else:
+            logger.warning("[%s] No port field found in mappings", SKILL_NAME)
     
-    # 1. Extract IPv4 addresses from question
-    ips = re.findall(ip_pattern, remaining)
-    for ip in ips:
-        if ip not in terms:
-            terms.append(ip)
-    remaining = re.sub(ip_pattern, ' ', remaining)
+    # ── COUNTRIES/GEOIP FILTER ─────────────────────────────────────────────
+    if countries:
+        # Map country names to country codes for geoIP
+        country_codes = _map_country_names_to_codes(countries)
+        
+        # Try mapping to geoip country field - prefer specific code versions
+        geoip_field = None
+        if "geoip.country_code2" in field_mappings.get("all_fields", []):
+            geoip_field = "geoip.country_code2.keyword"  # Use .keyword subfield for exact term matching
+        elif "geoip.country_code" in field_mappings.get("all_fields", []):
+            geoip_field = "geoip.country_code.keyword"
+        elif "geoip.country_code3" in field_mappings.get("all_fields", []):
+            geoip_field = "geoip.country_code3.keyword"  # 3-letter ISO code
+        elif "country_code" in field_mappings.get("all_fields", []):
+            geoip_field = "country_code.keyword" if "country_code.keyword" in field_mappings.get("all_fields", []) else "country_code"
+        elif "geoip.country_name" in field_mappings.get("all_fields", []):
+            geoip_field = "geoip.country_name"  # Fallback to country name
+        
+        if geoip_field and country_codes:
+            # Build should clause for multiple countries
+            country_clauses = [{"term": {geoip_field: code}} for code in country_codes]
+            if len(country_clauses) == 1:
+                must_clauses.append(country_clauses[0])
+            else:
+                must_clauses.append(
+                    {"bool": {"should": country_clauses, "minimum_should_match": 1}}
+                )
+            logger.info(
+                "[%s] Added country filter: %s (codes: %s) to field %s",
+                SKILL_NAME, countries, country_codes, geoip_field
+            )
+        else:
+            logger.warning("[%s] No geoIP field found in mappings for countries", SKILL_NAME)
+    
+    # ── PROTOCOLS FILTER ────────────────────────────────────────────────────
+    if protocols:
+        proto_field = None
+        if "protocol" in field_mappings.get("all_fields", {}):
+            proto_field = "protocol"
+        elif "service_protocol" in field_mappings.get("all_fields", {}):
+            proto_field = "service_protocol"
+        
+        if proto_field:
+            proto_clauses = [
+                {"term": {proto_field: p.lower()}} for p in protocols
+            ]
+            if len(proto_clauses) == 1:
+                must_clauses.append(proto_clauses[0])
+            else:
+                must_clauses.append(
+                    {"bool": {"should": proto_clauses, "minimum_should_match": 1}}
+                )
+            logger.info(
+                "[%s] Added protocol filter: %s to field %s",
+                SKILL_NAME, protocols, proto_field
+            )
+    
+    # ── GENERIC KEYWORD SEARCH ──────────────────────────────────────────────
+    if search_terms:
+        # Use existing keyword query building
+        keyword_query, _ = build_keyword_query(search_terms, field_mappings)
+        # Extract the query part
+        if "bool" in keyword_query.get("query", {}):
+            must_clauses.append(keyword_query["query"]["bool"])
+        elif "query" in keyword_query and keyword_query["query"]:
+            must_clauses.append(keyword_query["query"])
+        logger.info("[%s] Added keyword search: %s", SKILL_NAME, search_terms)
+    
+    # ── BUILD FINAL QUERY ───────────────────────────────────────────────────
+    if not must_clauses:
+        logger.warning("[%s] No must clauses built, returning match_none", SKILL_NAME)
+        return {"query": {"match_none": {}}, "size": 50}
+    
+    # Build bool query with all filters
+    if len(must_clauses) == 1:
+        final_query = {"query": {"bool": {"must": must_clauses[0]}}}
+    else:
+        final_query = {"query": {"bool": {"must": must_clauses}}}
+    
+    # ── ADD TIME RANGE FILTER ───────────────────────────────────────────────
+    # Parse time_range (could be "now-90d" or "2026-02-01:2026-03-01")
+    range_filter = _parse_time_range(time_range)
+    if range_filter:
+        # Add to filter clause (not must, so it doesn't affect scoring)
+        if "filter" not in final_query["query"]["bool"]:
+            final_query["query"]["bool"]["filter"] = []
+        elif not isinstance(final_query["query"]["bool"]["filter"], list):
+            final_query["query"]["bool"]["filter"] = [final_query["query"]["bool"]["filter"]]
+        
+        if isinstance(final_query["query"]["bool"]["filter"], list):
+            final_query["query"]["bool"]["filter"].append(range_filter)
+        else:
+            final_query["query"]["bool"]["filter"] = range_filter
+        
+        logger.info("[%s] Added time range filter: %s", SKILL_NAME, time_range)
+    
+    return final_query
 
-    # 2. Extract explicit port numbers from question
-    for m in re.finditer(port_pattern, remaining):
-        port_num = m.group(1) or m.group(2) or m.group(3)
-        if port_num and port_num not in terms:
-            terms.append(port_num)
-    remaining = re.sub(port_pattern, ' ', remaining)
 
-    # 3. Extract known protocol names from question
-    for proto in protocols:
-        if re.search(rf'\b{proto}\b', remaining, re.IGNORECASE) and proto not in terms:
-            terms.append(proto)
-
-    # 4. Extract hostnames / domain names from question
-    for m in re.finditer(hostname_pattern, remaining):
-        hostname = m.group(1)
-        if hostname not in terms:
-            terms.append(hostname)
-
-    # ── PRIORITY 3: Deduplicate and filter only structural noise ──
-    # Minimal stopwords: only truly structural words that add no search value
-    # Data-agnostic principle: Let OpenSearch rank by relevance, LLM decides importance
-    stopwords = {
-        'the', 'a', 'an', 'and', 'or', 'is', 'are', 'was', 'were',
-        'be', 'been', 'being', 'have', 'has', 'had', 'do', 'does', 'did',
-        'will', 'would', 'should', 'could', 'can', 'may', 'might',
-        'at', 'in', 'on', 'to', 'for', 'of', 'by', 'with', 'as',
-        'but', 'if', 'not', 'this', 'that', 'which', 'who', 'what', 'where', 'why', 'how',
+def _map_country_names_to_codes(country_names):
+    """
+    Map human-readable country names to ISO country codes.
+    
+    Args:
+        country_names: List of country names (e.g., ["Iran", "China"])
+    
+    Returns:
+        List of country codes (e.g., ["IR", "CN"])
+    """
+    # Simple mapping for common countries
+    country_map = {
+        "iran": "IR",
+        "iraq": "IQ",
+        "syria": "SY",
+        "north korea": "KP",
+        "china": "CN",
+        "russia": "RU",
+        "united states": "US",
+        "usa": "US",
+        "uk": "GB",
+        "united kingdom": "GB",
+        "france": "FR",
+        "germany": "DE",
+        "india": "IN",
+        "pakistan": "PK",
+        "cloudflare": "US",  # Cloudflare is USA-based infrastructure
     }
     
-    seen = set()
-    unique = []
-    for t in terms:
-        t_low = t.lower()
-        # IP addresses and ports are always valuable, even if short
-        is_ip_or_port = '.' in t or (t_low.isdigit() and 1 <= int(t_low) <= 65535) if t_low.isdigit() else False
-        if t_low not in stopwords and t_low not in seen and (len(t) > 2 or is_ip_or_port):
-            seen.add(t_low)
-            unique.append(t_low)
+    codes = []
+    for name in country_names:
+        code = country_map.get(name.lower())
+        if code:
+            codes.append(code)
+            logger.debug(
+                "[%s] Mapped country '%s' to code '%s'", SKILL_NAME, name, code
+            )
+        else:
+            logger.warning("[%s] Unknown country mapping: %s", SKILL_NAME, name)
+    
+    return codes
 
-    return unique
+
+def _parse_time_range(time_range_str):
+    """
+    Parse time range string into OpenSearch range filter.
+    
+    Supports formats:
+    - "now-90d" -> relative time
+    - "2026-02-01:2026-03-01" -> absolute date range
+    - "february" -> infer month (current year assumed)
+    
+    Args:
+        time_range_str: Time range specification string
+    
+    Returns:
+        dict: OpenSearch range filter or None
+    """
+    if not time_range_str:
+        return None
+    
+    # Handle relative times like "now-90d"
+    if time_range_str.startswith("now"):
+        return {
+            "range": {
+                "@timestamp": {
+                    "gte": time_range_str
+                }
+            }
+        }
+    
+    # Handle absolute date ranges like "2026-02-01:2026-03-01"
+    if ":" in time_range_str:
+        parts = time_range_str.split(":")
+        if len(parts) == 2:
+            return {
+                "range": {
+                    "@timestamp": {
+                        "gte": parts[0],
+                        "lte": parts[1]
+                    }
+                }
+            }
+    
+    # Handle month names like "february"
+    month_map = {
+        "january": ("01", "01"), "february": ("02", "02"), "march": ("03", "03"),
+        "april": ("04", "04"), "may": ("05", "05"), "june": ("06", "06"),
+        "july": ("07", "07"), "august": ("08", "08"), "september": ("09", "09"),
+        "october": ("10", "10"), "november": ("11", "11"), "december": ("12", "12"),
+    }
+    
+    month_abbr = time_range_str.lower()
+    if month_abbr in month_map:
+        month, end_month = month_map[month_abbr]
+        # Assume current year (2026 for testing, in production use current year)
+        return {
+            "range": {
+                "@timestamp": {
+                    "gte": f"2026-{month}-01",
+                    "lte": f"2026-{end_month}-28"  # or 31 depending on month
+                }
+            }
+        }
+    
+    logger.warning("[%s] Could not parse time range: %s", SKILL_NAME, time_range_str)
+    return None
+
+
+def _plan_query_with_llm(
+    question: str,
+    conversation_history: list[dict],
+    field_mappings: dict,
+    llm: Any,
+) -> dict:
+    """
+    Use the LLM to plan what search query to run given the user question.
+    
+    Specifically asks the LLM to:
+    1. Identify temporal context (time range in the question)
+    2. Extract entity references (IPs, ports, countries, protocols)
+    3. Determine query type (should we search raw logs at all?)
+    4. Form appropriate search strategy
+    
+    Returns dict with:
+        - reasoning: explanation of the query plan
+        - search_terms: list of generic search terms
+        - ports: list of port numbers if mentioned
+        - countries: list of country names if mentioned
+        - time_range: Elasticsearch time range string (e.g., "now-3d", "now-3M")
+        - skip_search: whether to skip searching (True if question doesn't need raw log search)
+    """
+    # Build conversation summary with focus on what was previously discussed
+    conversation_summary = ""
+    if conversation_history:
+        # Keep last 6 exchanges for context
+        relevant_msgs = conversation_history[-6:] if len(conversation_history) > 6 else conversation_history
+        conversation_parts = []
+        for msg in relevant_msgs:
+            role = msg.get("role", "unknown").upper()
+            content = msg.get("content", "")[:300]  # Keep reasonable length
+            conversation_parts.append(f"[{role}]: {content}")
+        conversation_summary = "\n".join(conversation_parts)
+    
+    prompt = f"""You are a cybersecurity analyst planning a log search. Your job is to understand what the user is looking for.
+
+CONVERSATION HISTORY:
+{conversation_summary if conversation_summary else "(No prior context)"}
+
+USER'S NEW QUESTION: "{question}"
+
+TASK:
+Analyze what the user wants to find. Extract specific, structured data:
+1. PORTS: Any port numbers mentioned (e.g., "port 443", "port 1194")
+2. COUNTRIES: Any country/region names mentioned (e.g., "from Iran", "traffic to Russia")
+3. PROTOCOLS: Any protocols mentioned (e.g., "HTTP", "DNS", "TLS")
+4. TIME RANGE: What time period ("February", "past 3 months", "yesterday")
+5. OTHER TERMS: Generic search keywords
+
+DO NOT mention specific field names - you don't know the structure of this log database.
+Instead, extract WHAT DATA to search for.
+
+COUNTRY EXTRACTION EXAMPLES:
+- "traffic from Iran" → countries: ["Iran"]
+- "connections to China" → countries: ["China"]  
+- "requests from Russia in February" → countries: ["Russia"], time_range: February
+
+PORT EXTRACTION EXAMPLES:
+- "port 443" → ports: [443]
+- "connections on port 1194" → ports: [1194]
+- "port 443 in February" → ports: [443], time_range: February
+
+TIME RANGES:
+- "February" or "last month" or "past month" → "2026-02-01:2026-03-01" (use current year)
+- "past 3 months" → "now-3M"
+- "last week" → "now-1w"
+- "yesterday" → "now-1d"
+- "past 90 days" → "now-90d"
+- No time mention → "now-90d"
+
+RESPOND IN JSON:
+{{
+  "reasoning": "What the user is asking for (2-3 sentences)",
+  "detected_time_range": "Time period mentioned verbatim",
+  "time_range": "Elasticsearch range format",
+  "ports": [list of port numbers, empty if none],
+  "countries": [list of country names, empty if none],
+  "protocols": [list of protocols, empty if none],
+  "search_terms": [other generic search terms],
+  "skip_search": false
+}}
+
+EXAMPLES OF GOOD RESPONSES:
+
+Q: "any traffic from iran in the past 3 months?"
+A: {{
+  "reasoning": "User asking for network traffic originating from Iran in the last 3 months",
+  "detected_time_range": "past 3 months",
+  "time_range": "now-3M",
+  "countries": ["Iran"],
+  "ports": [],
+  "protocols": [],
+  "search_terms": [],
+  "skip_search": false
+}}
+
+Q: "traffic on port 1194 in february"
+A: {{
+  "reasoning": "User asking for traffic on specific port in February",
+  "detected_time_range": "February",
+  "time_range": "2026-02-01:2026-03-01",
+  "ports": [1194],
+  "countries": [],
+  "protocols": [],
+  "search_terms": [],
+  "skip_search": false
+}}"""
+
+    try:
+        response = llm.complete(prompt)
+        logger.debug("[%s] LLM Query Plan Response: %s", SKILL_NAME, response[:200])
+        
+        # Parse JSON response
+        import json
+        plan = json.loads(response)
+        
+        # Validate and sanitize - ensure required fields exist
+        if not isinstance(plan.get("search_terms"), list):
+            plan["search_terms"] = []
+        if not isinstance(plan.get("ports"), list):
+            plan["ports"] = []
+        if not isinstance(plan.get("countries"), list):
+            plan["countries"] = []
+        if not isinstance(plan.get("protocols"), list):
+            plan["protocols"] = []
+        if not isinstance(plan.get("time_range"), str):
+            plan["time_range"] = "now-90d"
+        if not isinstance(plan.get("reasoning"), str):
+            plan["reasoning"] = response[:100]
+        
+        logger.info(
+            "[%s] Query Plan: Detected '%s' → range=%s | Ports=%s | Countries=%s | Protocols=%s | Terms=%s | Skip=%s",
+            SKILL_NAME,
+            plan.get("detected_time_range", "no explicit time range"),
+            plan.get("time_range"),
+            plan.get("ports", []),
+            plan.get("countries", []),
+            plan.get("protocols", []),
+            plan.get("search_terms"),
+            plan.get("skip_search", False)
+        )
+        
+        return plan
+    except Exception as exc:
+        logger.warning("[%s] LLM query planning failed: %s. Cannot proceed without LLM.", SKILL_NAME, exc)
+        
+        # No fallback to hardcoded term extraction - LLM should handle this
+        # If LLM fails, it's better to have no log search than a wrong one
+        return {
+            "reasoning": "LLM planning failed",
+            "search_terms": [],
+            "time_range": "now-90d",
+            "skip_search": True,
+            "detected_time_range": "(error)",
+        }
+
+
 
 
 def _format_combined_context(

@@ -22,6 +22,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
+from core.query_builder import discover_field_mappings
+
 logger = logging.getLogger(__name__)
 
 INSTRUCTION_PATH = Path(__file__).parent / "instruction.md"
@@ -42,6 +44,10 @@ def run(context: dict) -> dict:
     instruction = INSTRUCTION_PATH.read_text(encoding="utf-8")
     logs_index = cfg.get("db", "logs_index", default="securityclaw-logs")
     vector_index = cfg.get("db", "vector_index", default="securityclaw-vectors")
+
+    # ── 0. Discover field mappings from RAG ────────────────────────────────────
+    field_mappings = discover_field_mappings(db, llm)
+    logger.info("[%s] Discovered field mappings: %s", SKILL_NAME, field_mappings.keys())
 
     # ── 1. Fetch recent logs (last 6 hours) ──────────────────────────────────
     since = _epoch_ms_ago(hours=6)
@@ -122,7 +128,7 @@ def run(context: dict) -> dict:
         )
         
         # Analyze this network/sensor's logs
-        analytics = _analyze_network_logs(logs_group)
+        analytics = _analyze_network_logs(logs_group, field_mappings)
         analytics_text = _format_analytics(analytics)
 
         # Include any existing baselines for this identifier as prior context
@@ -919,9 +925,13 @@ def _extract_value(obj: Any, paths: list[str]) -> Any:
     return None
 
 
-def _analyze_network_logs(logs: list[dict]) -> dict:
+def _analyze_network_logs(logs: list[dict], field_mappings: dict) -> dict:
     """
     Perform comprehensive field-agnostic network analytics.
+
+    Args:
+        logs: List of raw log dicts
+        field_mappings: Field mappings discovered from RAG (keys:ip_fields, port_fields, text_fields, etc.)
     
     Returns dict with:
       - source_ips: {ip: count}
@@ -961,49 +971,65 @@ def _analyze_network_logs(logs: list[dict]) -> dict:
         for field in log.keys():
             discovered_fields[field] += 1
         
-        # ── Extract source info (multiple possible field paths) ────────────────
-        src_ip = _extract_value(log, ["source.ip", "src_ip", "source_address", "id.orig_h"])
-        src_port = _extract_value(log, ["source.port", "src_port", "source_port", "id.orig_p"])
+        # ── Extract source/dest IP and port using discovered fields ───────────
+        src_ip_fields = field_mappings.get("source_ip_fields", [])
+        dst_ip_fields = field_mappings.get("destination_ip_fields", [])
+        src_port_fields = field_mappings.get("source_port_fields", [])
+        dst_port_fields = field_mappings.get("destination_port_fields", [])
         
-        # ── Extract destination info ───────────────────────────────────────────
-        dst_ip = _extract_value(log, ["destination.ip", "dest_ip", "destination_address", "id.resp_h"])
-        dst_port = _extract_value(log, ["destination.port", "dest_port", "destination_port", "id.resp_p"])
+        src_ip = _extract_value(log, src_ip_fields) if src_ip_fields else None
+        src_port = _extract_value(log, src_port_fields) if src_port_fields else None
+        dst_ip = _extract_value(log, dst_ip_fields) if dst_ip_fields else None
+        dst_port = _extract_value(log, dst_port_fields) if dst_port_fields else None
         
-        # ── Extract protocol/service info ──────────────────────────────────────
-        protocol = _extract_value(log, ["network.transport", "protocol", "transport", "proto"])
-        service = _extract_value(log, ["network.protocol", "service", "app_proto"])
+        # ── Extract protocol/service info using discovered fields ────────────
+        protocol_fields = field_mappings.get("protocol_fields", [])
+        service_fields = field_mappings.get("service_fields", [])
+        protocol = _extract_value(log, protocol_fields) if protocol_fields else None
+        service = _extract_value(log, service_fields) if service_fields else None
         
-        # ── Extract direction ──────────────────────────────────────────────────
-        direction = _extract_value(log, ["network.direction", "direction", "flow_direction", "event.direction"])
+        # ── Extract direction using discovered fields ──────────────────────────
+        direction_fields = field_mappings.get("direction_fields", [])
+        direction = _extract_value(log, direction_fields) if direction_fields else None
         
-        # ── Extract volume metrics ─────────────────────────────────────────────
-        src_bytes = _extract_value(log, ["source.bytes", "bytes_sent", "src_bytes", "orig_bytes"])
-        dst_bytes = _extract_value(log, ["destination.bytes", "bytes_recv", "bytes_received", "resp_bytes"])
-        total_net_bytes = _extract_value(log, ["network.bytes", "bytes_total"])
-        packets = _extract_value(log, ["network.packets", "packets_total", "event.packets"])
-        duration = _extract_value(log, ["event.duration", "duration_us", "duration_ms"])
+        # ── Extract volume metrics using discovered fields ───────────────────
+        src_bytes_fields = field_mappings.get("source_bytes_fields", [])
+        dst_bytes_fields = field_mappings.get("destination_bytes_fields", [])
+        bytes_fields = field_mappings.get("bytes_fields", [])
+        packets_fields = field_mappings.get("packets_fields", [])
+        duration_fields = field_mappings.get("duration_fields", [])
         
-        # ── Extract GeoIP info (data-agnostic) ─────────────────────────────────
-        # Try multiple field paths for destination GeoIP
-        dst_geo = _extract_value(log, [
+        src_bytes = _extract_value(log, src_bytes_fields) if src_bytes_fields else None
+        dst_bytes = _extract_value(log, dst_bytes_fields) if dst_bytes_fields else None
+        total_net_bytes = _extract_value(log, bytes_fields) if bytes_fields else None
+        packets = _extract_value(log, packets_fields) if packets_fields else None
+        duration = _extract_value(log, duration_fields) if duration_fields else None
+        
+        # ── Extract GeoIP info using discovered fields ──────────────────────
+        geoip_fields = field_mappings.get("geoip_fields", [
             "destination.geo",           # ECS format
             "destination.geoip",
             "geoip",                     # Suricata format (flat)
             "dest_geoip",
         ])
+        dst_geo = _extract_value(log, geoip_fields) if geoip_fields else None
         
         if dst_ip and dst_geo:
             # Handle both dict and string formats
             geo_info = dst_geo
             if isinstance(dst_geo, dict):
-                # Try multiple field names for country/city
-                country = _extract_value(dst_geo, ["country_name", "country", "iso_code"])
-                city = _extract_value(dst_geo, ["city_name", "city"])
+                country = dst_geo.get("country_name") or dst_geo.get("country") or dst_geo.get("iso_code")
+                city = dst_geo.get("city_name") or dst_geo.get("city")
                 geo_info = f"{country or '?'} {city or ''}".strip()
             geoip_data[dst_ip] = geo_info
         
-        # ── Extract DNS info if available ──────────────────────────────────────
-        dns_question = _extract_value(log, ["dns.question.name", "dns.query", "query"])
+        # ── Extract DNS info using discovered fields ─────────────────────────
+        dns_fields = field_mappings.get("dns_query_fields", [
+            "dns.question.name",
+            "dns.query",
+            "query"
+        ])
+        dns_question = _extract_value(log, dns_fields) if dns_fields else None
         if dns_question:
             dns_queries[dns_question] += 1
         

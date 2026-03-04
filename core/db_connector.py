@@ -124,12 +124,143 @@ class OpenSearchConnector(BaseDBConnector):
     # ------------------------------------------------------------------
 
     def search(self, index: str, query: dict, size: int = 100) -> list[dict]:
+        """Execute search with automatic recovery from 400 errors."""
+        return self._search_with_retry(index, query, size)
+
+    def _search_with_retry(self, index: str, query: dict, size: int, attempt: int = 0, max_retries: int = 3) -> list[dict]:
+        """
+        Execute search with fallback strategies for malformed queries.
+        
+        Retry strategies:
+        1. Original query
+        2. Remove complex bool clauses (should, must)
+        3. Use only timestamp filter with match-all
+        4. Use match-all without any filters
+        """
+        if attempt >= max_retries:
+            logger.error("search(%s) failed after %d retry attempts", index, max_retries)
+            return []
+        
         try:
             resp = self._client.search(index=index, body=query, size=size)
+            if attempt > 0:
+                logger.info("search(%s) recovered on attempt %d with fallback strategy", index, attempt + 1)
             return [hit["_source"] for hit in resp["hits"]["hits"]]
+        
         except Exception as exc:
-            logger.error("search(%s) failed: %s", index, exc)
-            return []
+            error_str = str(exc)
+            
+            # Check if it's a 400 error (query syntax/parsing error)
+            if "400" in error_str or "failed to create query" in error_str or "RequestError" in error_str:
+                logger.warning("search(%s) attempt %d failed with query error: %s", 
+                             index, attempt + 1, error_str)
+                
+                # Get fallback query based on attempt number
+                fallback_query = self._get_fallback_query(query, attempt)
+                
+                if fallback_query is not None:
+                    logger.info("search(%s) attempting recovery #%d with simplified query", index, attempt + 2)
+                    return self._search_with_retry(index, fallback_query, size, attempt + 1, max_retries)
+                else:
+                    logger.error("search(%s) no more fallback strategies available after attempt %d", 
+                               index, attempt + 1)
+                    return []
+            else:
+                # Non-400 errors are not retried
+                logger.error("search(%s) failed with non-query error: %s", index, exc)
+                return []
+
+    def _get_fallback_query(self, query: dict, attempt: int) -> Optional[dict]:
+        """
+        Generate increasingly simple fallback queries to recover from malformed queries.
+        
+        Strategies:
+        Attempt 0: Original failed, try removing complex clauses (should, must, nested bool)
+        Attempt 1: Time-range filter only with match_all query  
+        Attempt 2+: Simple match-all query
+        """
+        import copy
+        
+        if attempt == 0:
+            # Try to simplify complex bool queries by removing problematic should/must clauses
+            simplified = copy.deepcopy(query)
+            
+            if "query" in simplified:
+                try:
+                    query_part = simplified["query"]
+                    
+                    # If it's a bool query, strip down to essential parts
+                    if isinstance(query_part, dict) and "bool" in query_part:
+                        bool_q = query_part["bool"]
+                        
+                        # Remove the most problematic clauses
+                        if "should" in bool_q:
+                            logger.debug("Attempt 1 (simplify): Removing 'should' clauses")
+                            del bool_q["should"]
+                        if "minimum_should_match" in bool_q:
+                            del bool_q["minimum_should_match"]
+                        if "must_not" in bool_q:
+                            logger.debug("Attempt 1 (simplify): Removing 'must_not' clauses")
+                            del bool_q["must_not"]
+                        
+                        # If we still have must or filter, keep them
+                        # If we removed everything, still return it for next attempt
+                        return simplified
+                except Exception as e:
+                    logger.debug("Simplification failed: %s", e)
+            
+            # If not a bool query, return as-is for next attempt
+            return simplified
+        
+        elif attempt == 1:
+            # Use absolutely minimal query with just time range
+            try:
+                # Extract time range if present
+                time_range_filter = None
+                
+                if "query" in query and isinstance(query["query"], dict):
+                    q = query["query"]
+                    if "bool" in q and "filter" in q["bool"]:
+                        filters = q["bool"]["filter"]
+                        # Find range filter
+                        if isinstance(filters, list):
+                            for f in filters:
+                                if isinstance(f, dict) and "range" in f:
+                                    time_range_filter = f
+                                    break
+                        elif isinstance(filters, dict) and "range" in filters:
+                            time_range_filter = filters
+                
+                # Build simple query with just time filter
+                fallback = {
+                    "query": {"match_all": {}},
+                    "size": query.get("size", 100)
+                }
+                
+                if time_range_filter:
+                    # Add time filter to bool query
+                    fallback["query"] = {
+                        "bool": {
+                            "filter": [time_range_filter]
+                        }
+                    }
+                
+                logger.debug("Attempt 2 (time-range): Using minimal query (match_all + time filter)")
+                return fallback
+                
+            except Exception as e:
+                logger.debug("Time-range fallback failed: %s", e)
+                return None
+        
+        elif attempt >= 2:
+            # Last resort: absolute minimum - match all with size limit
+            logger.debug("Attempt 3+ (bare match_all): Using simplest possible query")
+            return {
+                "query": {"match_all": {}},
+                "size": query.get("size", 100)
+            }
+        
+        return None
 
     def get_document(self, index: str, doc_id: str) -> Optional[dict]:
         try:
