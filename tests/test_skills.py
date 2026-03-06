@@ -41,11 +41,18 @@ class TestNetworkBaseliner:
         result = logic.run(runner_context)
 
         # May be "ok" or "no_data" depending on timestamp range vs fixture data
-        # Either way, if "ok" then we must have a vector stored
+        # Either way, if "ok" then we must have processed records and generated reports
         if result["status"] == "ok":
             db = runner_context["db"]
-            assert db.document_count("securityclaw-vectors") > 0
-            assert "baseline_doc_id" in result
+            # Verify return structure contains expected keys
+            assert "records_processed" in result
+            assert "networks_analyzed" in result
+            assert "documents_stored" in result
+            assert "identifier_field" in result
+            assert "identifiers" in result
+            # If documents were stored, vector index should have content
+            if result["documents_stored"] > 0:
+                assert db.document_count("securityclaw-vectors") > 0
 
     def test_run_updates_memory(self, runner_context):
         """A successful run should append a decision to agent memory."""

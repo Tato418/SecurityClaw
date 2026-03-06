@@ -3,12 +3,15 @@ core/config.py — Loads config.yaml and merges with env overrides.
 """
 from __future__ import annotations
 
+import logging
 import os
 from pathlib import Path
 from typing import Any
 
 import yaml
 from dotenv import load_dotenv
+
+logger = logging.getLogger(__name__)
 
 load_dotenv()
 
@@ -40,8 +43,19 @@ class Config:
         return cls._instance
 
     def _load(self) -> None:
-        with open(_CONFIG_PATH) as f:
-            self._data = yaml.safe_load(f)
+        # Try to load config.yaml; fall back to config.yaml.example if missing
+        config_path = _CONFIG_PATH
+        example_path = _ROOT / "config.yaml.example"
+        
+        if not config_path.exists() and example_path.exists():
+            logger.warning(
+                "config.yaml not found; using config.yaml.example as fallback. "
+                "For production use, copy config.yaml.example to config.yaml and customize."
+            )
+            config_path = example_path
+        
+        with open(config_path) as f:
+            self._data = yaml.safe_load(f) or {}
 
         # Env overrides (credentials from .env)
         env_overrides: dict = {}
