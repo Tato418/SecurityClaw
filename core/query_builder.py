@@ -121,22 +121,53 @@ def discover_field_mappings(db: Any, llm: Any) -> dict:
     except Exception as exc:
         logger.debug("Could not get mappings from OpenSearch: %s", exc)
 
-    # Fallback to RAG and hardcoded defaults
+    # Fallback 1: Read fields_rag.json written by fields_baseliner (fastest path)
+    if not mappings["all_fields"]:
+        try:
+            import json as _json
+            from pathlib import Path as _Path
+            _fields_rag = _Path(__file__).parents[1] / "data" / "fields_rag.json"
+            if _fields_rag.exists():
+                _rag_docs = _json.loads(_fields_rag.read_text(encoding="utf-8"))
+                for _doc in _rag_docs:
+                    if _doc.get("category") == "field_documentation" and "fields" in _doc:
+                        for _fname, _finfo in _doc["fields"].items():
+                            _ftype = _finfo.get("inferred_type", "text")
+                            if _fname not in mappings["all_fields"]:
+                                mappings["all_fields"].append(_fname)
+                            if _ftype == "ip" and _fname not in mappings["ip_fields"]:
+                                mappings["ip_fields"].append(_fname)
+                            elif _ftype == "port" and _fname not in mappings["port_fields"]:
+                                mappings["port_fields"].append(_fname)
+                            elif _ftype in ("domain", "fqdn") and _fname not in mappings["domain_fields"]:
+                                mappings["domain_fields"].append(_fname)
+                            elif _ftype in ("timestamp", "date") and _fname not in mappings["timestamp_fields"]:
+                                mappings["timestamp_fields"].append(_fname)
+                            elif _fname not in mappings["text_fields"]:
+                                mappings["text_fields"].append(_fname)
+                if mappings["all_fields"]:
+                    logger.debug(
+                        "Discovered fields from fields_rag.json: %d total",
+                        len(mappings["all_fields"]),
+                    )
+        except Exception as exc:
+            logger.debug("fields_rag.json field discovery failed: %s", exc)
+
+    # Fallback 2: RAG vector index (legacy — field_documentation category)
     if llm and not mappings["all_fields"]:
         try:
             from core.rag_engine import RAGEngine
             rag = RAGEngine(db=db, llm=llm)
-            
-            # Query RAG for field documentation created by network_baseliner
+
+            # Query RAG for field documentation
             docs = rag.retrieve("field names schema types", k=3)
             field_docs = [
                 doc.get("text", "")
                 for doc in docs
                 if doc.get("category") == "field_documentation"
             ]
-            
+
             if field_docs:
-                # Parse field documentation to extract field names
                 for field_doc in field_docs:
                     _parse_field_documentation(field_doc, mappings)
         except Exception as exc:

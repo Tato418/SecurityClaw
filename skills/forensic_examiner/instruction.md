@@ -101,7 +101,7 @@ The narrative explains:
 ## Relationship to Other Skills
 
 - **network_baseliner**: *Creates* field documentation → stored in RAG
-- **rag_querier**: Answers baseline questions ("what's normal?")
+- **baseline_querier**: Searches behavioral baselines and raw logs (traffic, alerts, patterns)
 - **forensic_examiner**: Answers "what happened?" for specific incidents *(this skill)*
 - **anomaly_watcher**: Detects incidents
 - **threat_analyst**: Analyzes the forensic findings

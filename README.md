@@ -9,7 +9,7 @@ A modular, skill-based autonomous Security Operations Center (SOC) agent that mo
 ✅ **Provider Agnostic** — Swap OpenSearch↔Elasticsearch and Ollama↔OpenAI via config  
 ✅ **RAG-Based Memory** — Vector embeddings stored in OpenSearch; context-aware threat analysis  
 ✅ **Working Memory** — Human-readable SITUATION.md tracks investigations, findings, and decisions  
-✅ **Zero Network I/O Tests** — 155 unit tests with mock DB, LLM, and data generators  
+✅ **Offline Test Suite** — ~300 collected tests with mocked DB/LLM and coverage reporting  
 
 ---
 
@@ -20,6 +20,22 @@ A modular, skill-based autonomous Security Operations Center (SOC) agent that mo
 - Python 3.11+
 - OpenSearch or Elasticsearch (or use mock for testing)
 - Ollama or OpenAI API key
+
+### 0.5 Quick Ollama Setup
+
+The current example configuration in [config.yaml.example](config.yaml.example) uses:
+
+- `qwen2.5:7b-instruct-q4_K_M` for chat/reasoning
+- `tinyllama` as the lightweight local auxiliary model currently referenced by the sample config
+
+Quick setup:
+
+```bash
+curl -fsSL https://ollama.com/install.sh | sh
+ollama serve
+ollama pull qwen2.5:7b-instruct-q4_K_M
+ollama pull tinyllama
+```
 
 ### 1. Install Dependencies
 
@@ -32,7 +48,7 @@ cd SecurityClaw
 ### 2. Interactive Onboarding
 
 ```bash
-python main.py onboard
+.venv/bin/python main.py onboard
 ```
 
 The wizard will guide you through:
@@ -46,7 +62,7 @@ See [ONBOARDING.md](ONBOARDING.md) for details.
 ### 3. Start the Agent
 
 ```bash
-python main.py run
+.venv/bin/python main.py run
 ```
 
 The agent will start a background scheduler and begin polling for anomalies.
@@ -55,9 +71,9 @@ The agent will start a background scheduler and begin polling for anomalies.
 
 In another terminal:
 ```bash
-python main.py status          # Print SITUATION.md
-python main.py list-skills     # Show loaded skills and intervals
-python main.py dispatch <skill>  # Fire a skill manually (e.g., anomaly_watcher)
+.venv/bin/python main.py status          # Print SITUATION.md
+.venv/bin/python main.py list-skills     # Show loaded skills and intervals
+.venv/bin/python main.py dispatch <skill>  # Fire a skill manually (e.g., anomaly_watcher)
 ```
 
 ---
@@ -99,7 +115,7 @@ SecurityClaw/
 │   ├── mock_opensearch.py     # In-memory DB (cosine kNN)
 │   ├── mock_llm.py            # Deterministic LLM (keyword-dispatched)
 │   ├── data_generator.py      # Synthetic network logs & anomalies
-│   └── test_*.py (9 files)    # 155 unit tests (all passing)
+│   └── test_*.py              # Offline tests + coverage
 │
 ├── requirements.txt / Pipfile  # Dependencies
 └── ONBOARDING.md              # Interactive setup guide
@@ -115,7 +131,7 @@ SecurityClaw/
 | **Scheduled Execution** | APScheduler fires skills at intervals; intervals defined in skill `instruction.md` front-matter |
 | **Provider Agnostic** | Abstract `BaseDBConnector` and `BaseLLMProvider` allow swapping vendors via config |
 | **RAG Context** | Embeddings stored in vector index; retrieved during LLM analysis for behavioral context |
-| **Testability** | Mock DB, LLM, and data generators enable 100% offline tests (155 tests, ~10s) |
+| **Testability** | Mock DB, LLM, and data generators enable repeatable offline tests with coverage reporting |
 
 ---
 
@@ -137,6 +153,8 @@ SecurityClaw/
 ### AnomalyWatcher (1-minute cycle)
 
 **Purpose**: Poll anomaly detection findings and escalate high-confidence anomalies.
+
+**Publication note**: this skill is still under active validation in real environments. Keep it marked experimental for now.
 
 **Logic**:
 1. Query OpenSearch AD index for new findings (cursor-based, from last poll)
@@ -160,6 +178,12 @@ SecurityClaw/
 4. If TRUE_THREAT: set "Current Focus" and trigger IR playbooks
 
 **Output**: Verdicts with confidence, MITRE tactic mapping, recommended actions.
+
+### Publication Status Notes
+
+- **AnomalyWatcher** — available, but still in-progress for broader real-world validation.
+- **ForensicExaminer** — available, but still in-progress for broader real-world validation.
+- **BaselineQuerier** — available, but still in-progress and not yet publication-hardened.
 
 ---
 
@@ -195,7 +219,8 @@ db:
 llm:
   provider: ollama              # or: openai
   ollama_base_url: http://localhost:11434
-  ollama_model: llama3
+  ollama_model: qwen2.5:7b-instruct-q4_K_M
+  ollama_embed_model: tinyllama
   # or:
   # openai_model: gpt-4o
   # openai_api_key_env: OPENAI_API_KEY
@@ -232,9 +257,9 @@ During onboarding, you can use any index names/patterns your environment provide
 ### .env (git-ignored)
 
 ```
-OPENSEARCH_USERNAME=admin
-OPENSEARCH_PASSWORD=secret
-OPENAI_API_KEY=sk-...
+OPENSEARCH_USERNAME=<your-opensearch-username>
+OPENSEARCH_PASSWORD=<your-opensearch-password>
+OPENAI_API_KEY=<your-openai-api-key>
 OLLAMA_BASE_URL=http://localhost:11434
 ```
 
@@ -244,42 +269,46 @@ OLLAMA_BASE_URL=http://localhost:11434
 
 ```bash
 # Interactive setup
-python main.py onboard
+.venv/bin/python main.py onboard
 
 # Run the full agent (blocks; press Ctrl+C to stop)
-python main.py run
+.venv/bin/python main.py run
 
 # Fire one skill immediately
-python main.py dispatch anomaly_watcher
-python main.py dispatch network_baseliner
-python main.py dispatch threat_analyst
+.venv/bin/python main.py dispatch anomaly_watcher
+.venv/bin/python main.py dispatch network_baseliner
+.venv/bin/python main.py dispatch threat_analyst
 
 # View working memory
-python main.py status
+.venv/bin/python main.py status
 
 # List skills and intervals
-python main.py list-skills
+.venv/bin/python main.py list-skills
 
 # Set logging level
-python main.py --log-level DEBUG run
+.venv/bin/python main.py --log-level DEBUG run
 ```
 
 ---
 
 ## Testing
 
-All tests are offline (mocks for DB and LLM) — no real network I/O required.
+All tests are offline by default (mock DB + mock LLM) and now emit coverage reports via `pytest-cov`.
 
 ```bash
-# Run all 155 tests
-python -m pytest tests/ -v
+# Run the full suite with coverage
+.venv/bin/python -m pytest
 
 # Run a specific test file
-python -m pytest tests/test_rag.py -v
+.venv/bin/python -m pytest tests/test_rag.py -v
 
-# Test with coverage
-python -m pytest tests/ --cov=core --cov=skills
+# Optional HTML coverage report
+.venv/bin/python -m pytest --cov-report=html
 ```
+
+Coverage XML is written to [coverage.xml](coverage.xml) for CI/reporting.
+
+Current publication-prep baseline: the full suite is measured automatically, but aggregate coverage is still dragged down by in-progress modules and provider-specific adapters. Treat the report as a measurement tool, not as a claim that every skill is publication-hardened.
 
 ### What's Tested
 
@@ -292,8 +321,10 @@ python -m pytest tests/ --cov=core --cov=skills
 | **LLM Abstraction** | 11 | Embedding, chat, canned responses |
 | **RAG Engine** | 15 | Store, retrieve, context building, category filters |
 | **Skill Loader** | 14 | Discovery, instruction loading, interval parsing |
-| **Skills** | 31 | NetworkBaseliner, AnomalyWatcher, ThreatAnalyst logic |
+| **Skills** | active coverage | Stable orchestration paths are covered; in-progress skills remain under active validation |
 | **Data Generator** | 24 | Synthetic logs, anomalies, baseline chunks, embeddings |
+
+Redundant supervisor routing tests were consolidated to keep the publication suite smaller and easier to maintain.
 
 ---
 
@@ -379,7 +410,7 @@ Respond in JSON format with:
 1. Create `skills/my_skill/` directory
 2. Write `logic.py` with `run(context)` function
 3. Write `instruction.md` with LLM guidance and optional `schedule_interval_seconds`
-4. Restart agent or run `python main.py dispatch my_skill` to test
+4. Restart agent or run `.venv/bin/python main.py dispatch my_skill` to test
 
 ### Add a DB Backend
 
@@ -409,12 +440,13 @@ Respond in JSON format with:
 
 **"Cannot connect to Ollama"**
 - Start Ollama: `ollama serve`
+- Pull the sample models: `ollama pull qwen2.5:7b-instruct-q4_K_M && ollama pull tinyllama`
 - Verify base URL in config.yaml
 
 **"Skill not loading"**
 - Check `/skills/<name>/logic.py` exists
 - Verify `run(context)` function signature
-- Check logs: `python main.py --log-level DEBUG run`
+- Check logs: `.venv/bin/python main.py --log-level DEBUG run`
 
 **"No findings detected"**
 - Seed mock DB: See `tests/conftest.py` for example synthetic data
@@ -456,6 +488,19 @@ For issues, questions, or feature requests, open an issue or contact the Securit
 
 ---
 
-**Last Updated**: March 2, 2026  
+## Security / Publication Checklist
+
+- `config.yaml`, `.env`, and `SITUATION.md` are intended to stay local and are git-ignored.
+- Use [config.yaml.example](config.yaml.example) as the public template.
+- Run a quick scan before publishing:
+
+  git grep -nEI '(password|api[_-]?key|BEGIN [A-Z ]*PRIVATE KEY|sk-)' -- .
+  git log --all -G 'password|api[_-]?key|sk-' --oneline
+
+- Current audit result: no obvious real credentials were found in tracked files during this publication pass. Placeholder values and a private sample host were sanitized.
+
+---
+
+**Last Updated**: March 6, 2026  
 **Version**: 1.0.0  
-**Status**: Production Ready (155/155 tests passing)
+**Status**: Active development / publication preparation

@@ -1,0 +1,44 @@
+name: opensearch_querier
+description: >
+  Direct OpenSearch query execution for when exact field names are known.
+  Searches logs with precise filters when schema is understood.
+
+can_answer:
+  - "log search with known field names"
+  - "traffic from specific country/IP/port (after schema discovery)"
+  - "connection patterns"
+  - "alert type filtering"
+  - "alert/event filtering"
+  - "event type searches"
+  - "log signature matching"
+
+cannot_answer:
+  - "field schema discovery"
+  - "user-friendly term to field mapping"
+  - "generic alert queries without specific type/filter"
+  - "generic signal/event queries without criteria"
+  - "IP reputation"
+  - "timeline reconstruction"
+
+priority_keywords:
+  - "search"
+  - "find"
+  - "query"
+  - "filter"
+
+min_prior_context: 1
+  # Works best after rag_querier has discovered available fields
+  # Can attempt directly but may fail if schema is wrong
+
+returns:
+  - results (raw log records)
+  - results_count
+  - countries
+  - ports
+  - protocols
+  - time_range
+
+notes:
+  - Use AFTER fields_querier for field schema discovery
+  - Use AFTER baseline_querier if RAG results need pagination/precise filters
+  - Use directly only if field names are explicitly mentioned

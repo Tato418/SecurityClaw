@@ -1,0 +1,34 @@
+name: fields_querier
+description: >
+  Reads data/fields_rag.json (built by fields_baseliner) and answers field-schema
+  questions. Returns exact OpenSearch field names, types, and examples.
+  Use BEFORE opensearch_querier for any query requiring field discovery.
+
+can_answer:
+  - "field schema discovery"
+  - "what field holds X (bytes/ip/port/protocol/country)"
+  - "available field names and types"
+  - "which fields exist for filtering"
+  - "field examples and frequencies"
+  - "schema catalog lookup"
+
+cannot_answer:
+  - "log searching or querying"
+  - "incident analysis"
+  - "threat reputation"
+  - "network behavior baseline"
+  - "anomaly detection"
+
+priority_keywords:
+  - "field"
+  - "schema"
+  - "what field"
+  - "which field"
+  - "bytes field"
+  - "ip field"
+
+min_prior_context: 0
+
+returns:
+  - findings (question, answer, field_mappings, confidence)
+  - field_mappings (structured dict with ip_fields, port_fields, text_fields, etc.)

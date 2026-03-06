@@ -79,8 +79,9 @@ class TestRouteQuestionWithHistory:
         assert "parameters" in result
 
 
+@pytest.mark.skip(reason="rag_querier skill has been deprecated and removed")
 class TestRagQuerierWithHistory:
-    """Test rag_querier skill receives conversation history."""
+    """Test rag_querier skill receives conversation history (DEPRECATED)."""
     
     def test_rag_querier_receives_history_in_parameters(self, runner_context):
         """rag_querier.run() should receive conversation_history in parameters."""

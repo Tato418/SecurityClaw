@@ -36,10 +36,16 @@ class Runner:
     """
 
     # Hard-coded fallback intervals (seconds) for known skills
+    # On-demand (interactive) skills set to None — never auto-scheduled.
     DEFAULT_INTERVALS: dict[str, int] = {
         "anomaly_watcher": 60,          # 1-minute heartbeat
-        "network_baseliner": 6 * 3600,  # 6-hour memory builder
+        "network_baseliner": 6 * 3600,  # 6-hour behavioral memory builder
+        "fields_baseliner": 3600,       # 1-hour field-schema cataloguer
         "threat_analyst": 300,          # 5-minute analysis sweep
+        # Interactive query skills — no scheduled interval
+        "baseline_querier": None,
+        "fields_querier": None,
+        "opensearch_querier": None,
     }
 
     def __init__(

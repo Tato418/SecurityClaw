@@ -1,0 +1,41 @@
+name: threat_analyst
+description: >
+  Analyzes security findings using RAG context to determine threat level.
+  Queries external threat intelligence APIs for IP/domain reputation.
+
+can_answer:
+  - "IP reputation"
+  - "domain reputation"
+  - "threat level assessment"
+  - "maliciousness indicators"
+  - "risk score"
+  - "abuse history"
+  - "vulnerability assessment"
+
+cannot_answer:
+  - "timeline reconstruction"
+  - "log/baseline searching"
+  - "alert type searching"
+  - "event type searching"
+  - "log message searching"
+  - "signature matching"
+  - "field schema discovery"
+  - "historical pattern analysis"
+
+priority_keywords:
+  - "reputation"
+  - "malicious"
+  - "threat"
+  - "risk"
+  - "vulnerability"
+  - "abuse"
+  - "blacklist"
+
+min_prior_context: 1
+  # Expects at least 1 prior result (entity to evaluate) to work well
+  # Can work without, but context makes it more valuable
+
+returns:
+  - verdicts
+  - confidence_scores
+  - source_apis

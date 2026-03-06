@@ -35,3 +35,27 @@ results = db.search(index, query, size=100)
 ```
 
 This ensures NO hardcoded field names anywhere in the codebase.
+
+## Query Planning Strategy
+
+See `PLANNING_PROMPT.md` for the detailed LLM prompt that guides query planning:
+- How to extract countries, ports, protocols, time_range from natural language
+- Examples of question → structured fields conversion
+- Error handling for ambiguous or partial information
+
+**Architecture Decision:** The planning prompt is kept in markdown (not embedded in Python code) to:
+- Enable prompt engineering without code redeploy
+- Make prompt changes auditable
+- Allow iterative refinement of query extraction logic
+
+Python code (`_plan_opensearch_query_with_llm`) loads `PLANNING_PROMPT.md` at runtime and combines it with dynamic conversation context and field mappings.
+
+### Justification for Separating Static vs Dynamic Content
+
+| Content Type | Location | Reason |
+|---|---|---|
+| Static JSON examples, error handling, extraction rules | `PLANNING_PROMPT.md` | Reusable, maintainable, auditable |
+| Dynamic context assembly, conversation history, runtime field mapping | `logic.py` | Changes based on actual conversation and available fields |
+| Query execution, result handling | `logic.py` | Implementation detail, not guidance |
+
+This pattern allows the LLM prompt to evolve without code changes while keeping implementation details encapsulated.

@@ -7,7 +7,21 @@ The interactive configuration wizard guides you through setting up SecurityClaw 
 ### Step 1: Run the Onboarding Wizard
 
 ```bash
-python main.py onboard
+.venv/bin/python main.py onboard
+```
+
+### Step 0 (Optional): Quick Ollama Setup
+
+The current example config uses these local Ollama models:
+
+- `qwen2.5:7b-instruct-q4_K_M`
+- `tinyllama`
+
+```bash
+curl -fsSL https://ollama.com/install.sh | sh
+ollama serve
+ollama pull qwen2.5:7b-instruct-q4_K_M
+ollama pull tinyllama
 ```
 
 This launches an interactive CLI that will ask you about:
@@ -39,13 +53,13 @@ After onboarding, view what was saved:
 
 ```bash
 cat config.yaml     # DB and LLM provider settings
-cat .env            # Secrets (master credentials)
+# .env contains secrets — verify keys exist, but do not paste or commit it.
 ```
 
 ### Step 3: List Available Skills
 
 ```bash
-python main.py list-skills
+.venv/bin/python main.py list-skills
 ```
 
 Output example:
@@ -58,7 +72,7 @@ Output example:
 ### Step 4: Start the Agent
 
 ```bash
-python main.py run
+.venv/bin/python main.py run
 ```
 
 The agent will:
@@ -67,6 +81,12 @@ The agent will:
 - Poll OpenSearch for logs and anomaly findings
 - Build RAG context from normal behavior
 - Issue threat verdicts using the LLM
+
+### Feature Maturity Notes
+
+- **anomaly_watcher** — still in progress for broader real-environment validation.
+- **forensic_examiner** — still in progress for broader real-environment validation.
+- **baseline_querier** — still in progress and not yet publication-hardened.
 
 ---
 
@@ -80,15 +100,16 @@ db:
   provider: opensearch              # or: elasticsearch
   host: localhost
   port: 9200
-  username: admin
-  password: admin123
+  username: ""                      # load from .env if used
+  password: ""                      # load from .env if used
   use_ssl: false
   verify_certs: false
 
 llm:
   provider: ollama                  # or: openai
   ollama_base_url: http://localhost:11434
-  ollama_model: llama3
+  ollama_model: qwen2.5:7b-instruct-q4_K_M
+  ollama_embed_model: tinyllama
   # or:
   # openai_model: gpt-4o
   # openai_api_key_env: OPENAI_API_KEY
@@ -96,9 +117,9 @@ llm:
 
 **`.env`** — Secret credentials (git-ignored)
 ```
-OPENSEARCH_USERNAME=admin
-OPENSEARCH_PASSWORD=secret
-OPENAI_API_KEY=sk-...
+OPENSEARCH_USERNAME=<your-opensearch-username>
+OPENSEARCH_PASSWORD=<your-opensearch-password>
+OPENAI_API_KEY=<your-openai-api-key>
 ```
 
 ---
@@ -107,12 +128,12 @@ OPENAI_API_KEY=sk-...
 
 | Command | Purpose |
 |---------|---------|
-| `python main.py onboard` | Interactive configuration wizard |
-| `python main.py run` | Start the full agent (foreground) |
-| `python main.py list-skills` | List discovered skills and intervals |
-| `python main.py dispatch <skill>` | Fire a skill once (e.g., `anomaly_watcher`) |
-| `python main.py status` | Print current SITUATION.md |
-| `python main.py --log-level DEBUG run` | Start with debug logging |
+| `.venv/bin/python main.py onboard` | Interactive configuration wizard |
+| `.venv/bin/python main.py run` | Start the full agent (foreground) |
+| `.venv/bin/python main.py list-skills` | List discovered skills and intervals |
+| `.venv/bin/python main.py dispatch <skill>` | Fire a skill once (e.g., `anomaly_watcher`) |
+| `.venv/bin/python main.py status` | Print current SITUATION.md |
+| `.venv/bin/python main.py --log-level DEBUG run` | Start with debug logging |
 
 ---
 
@@ -125,6 +146,7 @@ OPENAI_API_KEY=sk-...
 
 **"Cannot connect to Ollama"**
 - Ensure Ollama is running (`ollama serve`)
+- Ensure the example models are present (`ollama list`)
 - Check the base URL (default: `http://localhost:11434`)
 
 **"No skills found"**
@@ -133,7 +155,7 @@ OPENAI_API_KEY=sk-...
 
 **Re-running onboarding**
 ```bash
-python main.py onboard
+.venv/bin/python main.py onboard
 ```
 Simply repeat the wizard to update any settings (existing values are shown as defaults).
 

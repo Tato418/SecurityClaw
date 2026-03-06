@@ -290,6 +290,7 @@ def chat():
         route_question,
         execute_skill_workflow,
         format_response,
+        orchestrate_with_supervisor,
         load_conversation_history,
         add_to_history,
         get_context_summary,
@@ -394,38 +395,55 @@ def chat():
             conversation_history = load_conversation_history(conversation_id)
             recent_history = conversation_history[-4:] if conversation_history else []  # Last 2 Q&A pairs
             
-            # Route the question with conversation context
-            console.print("\n[dim]Analyzing question...[/]")
-            routing = route_question(user_input, available_skills, llm, instruction, recent_history)
+            # Route/orchestrate with conversation context
+            console.print()
 
-            console.print(f"[dim]→ Reasoning: {routing.get('reasoning', 'N/A')}[/]")
+            def _supervisor_callback(event: str, data: dict, step: int, max_steps: int) -> None:
+                """Print supervisor thoughts in grey in real-time as each step unfolds."""
+                if event == "deciding":
+                    reasoning = data.get("reasoning", "")
+                    skills = data.get("skills", [])
+                    console.print(f"[dim]┌ Supervisor step {step}/{max_steps}[/]")
+                    if reasoning:
+                        console.print(f"[dim]│ {reasoning}[/]")
+                    if skills:
+                        console.print(f"[dim]│ → Invoking: {', '.join(skills)}[/]")
+                    else:
+                        console.print(f"[dim]│ → No skills selected — finalizing[/]")
+                elif event == "evaluated":
+                    satisfied = data.get("satisfied", False)
+                    confidence = float(data.get("confidence") or 0)
+                    reasoning = data.get("reasoning", "")
+                    icon = "✓" if satisfied else "✗"
+                    console.print(f"[dim]└ {icon} {'Satisfied' if satisfied else 'Not satisfied'} ({confidence:.0%}) — {reasoning}[/]")
+                    console.print()
 
-            # Execute skill workflow
-            if routing.get("skills"):
-                skills_str = ", ".join(routing["skills"])
-                console.print(f"[dim]→ Skills: {skills_str}[/]\n")
+            orchestration = orchestrate_with_supervisor(
+                user_question=user_input,
+                available_skills=available_skills,
+                runner=runner,
+                llm=llm,
+                instruction=instruction,
+                cfg=cfg,
+                conversation_history=recent_history,
+                step_callback=_supervisor_callback,
+            )
 
-                skill_results = execute_skill_workflow(routing["skills"], runner, {}, routing, recent_history)
-
-                # Format response with thinking-action-reflection loop
-                response = format_response(user_input, routing, skill_results, llm, cfg)
-            else:
-                # Direct response without skills
-                console.print("[dim]→ No skills needed\n[/]")
-                response = format_response(user_input, routing, {}, llm)
+            routing = orchestration.get("routing", {"skills": []})
+            skill_results = orchestration.get("skill_results", {})
+            response = orchestration.get("response", "Unable to produce a response.")
 
             console.print(f"[bold green]Agent[/]: {response}\n")
 
             # Save to history
-            add_to_history(conversation_id, user_input, response, routing, 
-                          skill_results if routing.get("skills") else {})
+            add_to_history(conversation_id, user_input, response, routing, skill_results)
 
         except KeyboardInterrupt:
             console.print("\n[yellow]Interrupted.[/]")
             break
         except Exception as e:
             console.print(f"[red]Error: {e}[/]")
-            logger.exception("Chat error")
+            logging.getLogger(__name__).exception("Chat error")
 
 
 # ──────────────────────────────────────────────────────────────────────────────

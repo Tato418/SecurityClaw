@@ -1,0 +1,40 @@
+name: forensic_examiner
+description: >
+  Reconstructs incident timelines by linking DNS queries, network flows, and alerts.
+  Analyzes behavior patterns and identifies key entities and risk implications.
+
+can_answer:
+  - "incident timeline reconstruction"
+  - "what happened (sequence of events)"
+  - "behavior pattern analysis"
+  - "entity linking (who/what was involved)"
+  - "incident context and relationships"
+
+cannot_answer:
+  - "IP reputation"
+  - "field schema discovery"
+  - "baseline pattern comparison"
+  - "real-time monitoring"
+
+priority_keywords:
+  - "timeline"
+  - "incident"
+  - "what happened"
+  - "sequence"
+  - "reconstruct"
+  - "relationship"
+
+min_prior_context: 0
+  # Can work standalone to reconstruct incident
+  # Beneficial to have context about what to focus on
+
+returns:
+  - forensic_report
+  - timeline_narrative
+  - results_found
+  - refinement_rounds
+  - context_anchors
+
+notes:
+  - Best used FIRST when question is about incident timeline
+  - Can be chained with threat_analyst AFTER for reputation of identified entities

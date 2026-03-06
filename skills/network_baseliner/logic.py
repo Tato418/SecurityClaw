@@ -1,16 +1,24 @@
 """
 skills/network_baseliner/logic.py
 
-Field-agnostic network behavior baseliner. Discovers available fields
-in logs, performs comprehensive network analytics (IP-to-IP relationships,
-port patterns, protocols, direction, GeoIP, DNS, service identification),
-and stores the result in the RAG vector index for ThreatAnalyst retrieval.
+Behavioral network baseliner.  Analyzes recent network logs and stores
+behavioral baselines in the RAG vector index: traffic patterns, IP/port
+relationships, protocol distributions, DNS activity, and GeoIP data.
+
+Field-schema documentation (discovering what fields exist and their types)
+is handled by fields_baseliner, which writes data/fields_rag.json.
+
+Features:
+  - Stores up to MAX_BASELINE_DOCS (100) docs; evicts oldest on overflow.
+  - force_refresh=True (via parameters) deletes all existing baseline docs
+    before rebuilding the index from scratch.
 
 Context keys consumed:
-    context["db"]     -> BaseDBConnector
-    context["llm"]    -> BaseLLMProvider
-    context["memory"] -> AgentMemory
-    context["config"] -> Config
+    context["db"]         -> BaseDBConnector
+    context["llm"]        -> BaseLLMProvider
+    context["memory"]     -> AgentMemory
+    context["config"]     -> Config
+    context["parameters"] -> {"force_refresh": bool}  # optional
 """
 from __future__ import annotations
 
@@ -28,6 +36,72 @@ logger = logging.getLogger(__name__)
 
 INSTRUCTION_PATH = Path(__file__).parent / "instruction.md"
 SKILL_NAME = "network_baseliner"
+MAX_BASELINE_DOCS = 100   # cap: evict oldest docs when index exceeds this
+
+
+def _extract_json_from_response(response: str) -> dict | None:
+    """
+    Extract JSON from LLM response, handling markdown code blocks and extra text.
+    
+    Handles formats like:
+    - Raw JSON: {"query": {...}}
+    - Markdown: ```json\n{"query": {...}}\n```
+    - With explanation: "Here's the fixed query: {"query": {...}}"
+    """
+    try:
+        # Try direct parsing first
+        return json.loads(response)
+    except json.JSONDecodeError:
+        pass
+    
+    # Try to extract from markdown code blocks
+    matches = re.findall(r'```(?:json)?\s*([\s\S]*?)```', response)
+    for match in matches:
+        try:
+            return json.loads(match.strip())
+        except json.JSONDecodeError:
+            continue
+    
+    # Try to find JSON object in the response
+    matches = re.findall(r'\{[\s\S]*\}', response)
+    for match in matches:
+        try:
+            return json.loads(match)
+        except json.JSONDecodeError:
+            continue
+    
+    return None
+
+
+def _execute_search_with_llm_repair(db: Any, llm: Any, index: str, query: dict, size: int = 100) -> list[dict]:
+    """
+    Execute search with intelligent repair on malformed queries.
+    
+    Uses QueryRepairMemory to remember successful fixes and avoid redundant LLM calls.
+    Retries up to 3 times with progressively detailed prompts.
+    """
+    try:
+        logger.debug("[%s] Executing search query on index: %s", SKILL_NAME, index)
+        return db.search(index, query, size=size)
+    except Exception as exc:
+        from core.db_connector import QueryMalformedException
+        
+        if isinstance(exc, QueryMalformedException):
+            logger.warning("[%s] Query malformed: %s — attempting intelligent repair", SKILL_NAME, exc.error_message)
+            
+            from core.query_repair import IntelligentQueryRepair
+            repair = IntelligentQueryRepair(db, llm)
+            success, results, message = repair.repair_and_retry(index, exc.original_query, size=size)
+            
+            if success:
+                logger.info("[%s] Repair successful! Got %d results", SKILL_NAME, len(results or []))
+                return results or []
+            else:
+                logger.error("[%s] Repair failed: %s", SKILL_NAME, message)
+                return []
+        else:
+            logger.error("[%s] Unexpected search error (type: %s): %s", SKILL_NAME, type(exc).__name__, exc)
+            return []
 
 
 def run(context: dict) -> dict:
@@ -36,14 +110,21 @@ def run(context: dict) -> dict:
     llm = context.get("llm")
     memory = context.get("memory")
     cfg = context.get("config")
+    parameters = context.get("parameters", {})
+    force_refresh = parameters.get("force_refresh", False)
 
     if db is None or llm is None:
         logger.warning("[%s] db or llm not available — skipping.", SKILL_NAME)
         return {"status": "skipped", "reason": "no db/llm"}
 
     instruction = INSTRUCTION_PATH.read_text(encoding="utf-8")
-    logs_index = cfg.get("db", "logs_index", default="securityclaw-logs")
-    vector_index = cfg.get("db", "vector_index", default="securityclaw-vectors")
+    logs_index   = cfg.get("db", "logs_index",   default="securityclaw-logs")
+    vector_index = cfg.get("db", "vector_index",  default="securityclaw-vectors")
+
+    # ── 0a. Force-refresh: wipe all existing behavioural baseline docs ────────
+    if force_refresh:
+        logger.info("[%s] force_refresh=True — deleting all existing baseline docs.", SKILL_NAME)
+        _delete_all_baseline_docs(db, llm, vector_index)
 
     # ── 0. Discover field mappings from RAG ────────────────────────────────────
     field_mappings = discover_field_mappings(db, llm)
@@ -56,7 +137,7 @@ def run(context: dict) -> dict:
             "range": {"@timestamp": {"gte": since, "format": "epoch_millis"}}
         },
     }
-    raw_logs = db.search(logs_index, query, size=10000)
+    raw_logs = _execute_search_with_llm_repair(db, llm, logs_index, query, size=10000)
 
     if not raw_logs:
         logger.info("[%s] No logs found in the last 6 hours.", SKILL_NAME)
@@ -102,7 +183,7 @@ def run(context: dict) -> dict:
     existing_baselines_by_id: dict[str, dict[str, str]] = {}
     if not fresh_start:
         for ident in grouped_logs:
-            prior = _fetch_existing_baselines(db, vector_index, ident)
+            prior = _fetch_existing_baselines(db, llm, vector_index, ident)
             if prior:
                 existing_baselines_by_id[ident] = prior
                 logger.info(
@@ -204,48 +285,8 @@ def run(context: dict) -> dict:
                 change_summary,
             )
         
-        # Store schema observation (field mapping discovery) separately
-        discovered_fields = analytics.get("discovered_fields", {})
-        if discovered_fields:
-            # Check if field schema has changed
-            prior_schema = prior_baselines.get("schema_observation")
-            field_metrics = {"unique_fields": len(discovered_fields)}
-            schema_changed, schema_change_summary = _has_baseline_changed(field_metrics, prior_schema)
-            
-            if schema_changed:
-                schema_text = _format_schema_observation(discovered_fields, identifier_field)
-                schema_doc_id = rag.store(
-                    text=schema_text,
-                    category="schema_observation",
-                    source=SKILL_NAME,
-                    metadata={
-                        "identifier_field": identifier_field,
-                        "identifier_value": identifier,
-                        "field_count": len(discovered_fields),
-                        "change_summary": schema_change_summary,
-                    },
-                )
-                all_stored_docs.append({
-                    "category": "schema_observation",
-                    "identifier": identifier,
-                    "doc_id": schema_doc_id,
-                    "change_summary": schema_change_summary,
-                })
-                logger.info(
-                    "[%s] Stored schema observation for %s (%d fields, id=%s) — %s",
-                    SKILL_NAME,
-                    identifier,
-                    len(discovered_fields),
-                    schema_doc_id[:8],
-                    schema_change_summary,
-                )
-            else:
-                logger.info(
-                    "[%s] Skipping schema observation for %s — %s",
-                    SKILL_NAME,
-                    identifier,
-                    schema_change_summary,
-                )
+    # ── 4b. Evict docs beyond the 100-doc cap ──────────────────────────────────
+    _evict_old_baseline_docs(db, llm, vector_index)
 
     # ── 4. Update agent memory ────────────────────────────────────────────────
     if memory:
@@ -393,7 +434,7 @@ def _get_index_dim(db, vector_index: str) -> int | None:
         return None
 
 
-def _fetch_existing_baselines(db, vector_index: str, identifier_value: str) -> dict[str, str]:
+def _fetch_existing_baselines(db, llm, vector_index: str, identifier_value: str) -> dict[str, str]:
     """Return existing baseline docs for this network/sensor as {category: text}."""
     try:
         query = {
@@ -407,7 +448,7 @@ def _fetch_existing_baselines(db, vector_index: str, identifier_value: str) -> d
             },
             "_source": ["text", "category"],
         }
-        docs = db.search(vector_index, query, size=50)
+        docs = _execute_search_with_llm_repair(db, llm, vector_index, query, size=50)
         result: dict[str, str] = {}
         for doc in docs:
             cat = doc.get("category", "")
@@ -421,6 +462,107 @@ def _fetch_existing_baselines(db, vector_index: str, identifier_value: str) -> d
             SKILL_NAME, identifier_value, exc,
         )
         return {}
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Baseline doc cap helpers
+# ──────────────────────────────────────────────────────────────────────────────
+
+def _count_baseline_docs(db: Any, vector_index: str) -> int:
+    """Return the number of docs stored by network_baseliner in the vector index."""
+    try:
+        query = {
+            "query": {"bool": {"filter": [{"term": {"source": SKILL_NAME}}]}},
+            "size": 0,
+        }
+        if hasattr(db, "_client"):
+            resp = db._client.count(index=vector_index, body={"query": query["query"]})
+            return int(resp.get("count", 0))
+        # Fallback: search and count
+        results = db.search(vector_index, query, size=1000) or []
+        return len(results)
+    except Exception as exc:
+        logger.debug("[%s] Could not count baseline docs: %s", SKILL_NAME, exc)
+        return 0
+
+
+def _delete_all_baseline_docs(db: Any, llm: Any, vector_index: str) -> None:
+    """Delete ALL behavioral baseline docs stored by network_baseliner."""
+    try:
+        query = {
+            "query": {"bool": {"filter": [{"term": {"source": SKILL_NAME}}]}},
+            "_source": False,
+            "size": 1000,
+        }
+        docs = db.search(vector_index, query, size=1000) or []
+        if not docs:
+            return
+        if hasattr(db, "_client"):
+            db._client.delete_by_query(
+                index=vector_index,
+                body={"query": query["query"]},
+                conflicts="proceed",
+                refresh=True,
+            )
+            logger.info("[%s] Deleted all %d baseline docs (force_refresh).", SKILL_NAME, len(docs))
+        else:
+            for doc in docs:
+                doc_id = doc.get("_id")
+                if doc_id:
+                    try:
+                        db._client.delete(index=vector_index, id=doc_id, refresh=True)
+                    except Exception:
+                        pass
+    except Exception as exc:
+        logger.warning("[%s] Could not delete baseline docs: %s", SKILL_NAME, exc)
+
+
+def _evict_old_baseline_docs(db: Any, llm: Any, vector_index: str) -> None:
+    """
+    If the number of baseline docs exceeds MAX_BASELINE_DOCS, delete the
+    oldest ones (by timestamp ASC) to keep the index within the cap.
+    """
+    try:
+        count = _count_baseline_docs(db, vector_index)
+        if count <= MAX_BASELINE_DOCS:
+            return
+
+        overage = count - MAX_BASELINE_DOCS
+        logger.info(
+            "[%s] Index has %d baseline docs (cap=%d); evicting %d oldest.",
+            SKILL_NAME, count, MAX_BASELINE_DOCS, overage,
+        )
+
+        # Fetch oldest docs sorted by timestamp ascending
+        query = {
+            "query": {"bool": {"filter": [{"term": {"source": SKILL_NAME}}]}},
+            "sort": [{"timestamp": {"order": "asc"}}],
+            "_source": False,
+            "size": overage + 10,   # small buffer
+        }
+        oldest_docs = db.search(vector_index, query, size=overage + 10) or []
+        to_delete = oldest_docs[:overage]
+
+        if hasattr(db, "_client"):
+            ids = [d["_id"] for d in to_delete if d.get("_id")]
+            if ids:
+                db._client.delete_by_query(
+                    index=vector_index,
+                    body={"query": {"ids": {"values": ids}}},
+                    conflicts="proceed",
+                    refresh=True,
+                )
+                logger.info("[%s] Evicted %d old baseline docs.", SKILL_NAME, len(ids))
+        else:
+            for doc in to_delete:
+                doc_id = doc.get("_id")
+                if doc_id:
+                    try:
+                        db._client.delete(index=vector_index, id=doc_id, refresh=True)
+                    except Exception:
+                        pass
+    except Exception as exc:
+        logger.warning("[%s] Eviction failed (non-critical): %s", SKILL_NAME, exc)
 
 
 def _with_prior(prompt: str, existing_baselines: dict, category: str) -> str:
@@ -569,135 +711,29 @@ def _generate_baseline_documents(
     existing_baselines: dict | None = None,
 ) -> list[dict]:
     """
-    Generate baseline documents that comprehensively document the discovered fields.
-    
-    Instead of analyzing specific aspects, document WHAT FIELDS EXIST and WHAT THEY CONTAIN.
-    This allows RAG querier to be truly data-agnostic: it just extracts search terms and 
-    searches - the LLM knows from the field documentation what to extract from results.
-    
-    If existing_baselines ({category: prior_text}) is supplied, each LLM prompt
-    will include the prior summary so the model can update rather than replace it.
+    Generate behavioral baseline documents for the RAG vector index.
+
+    Covers: traffic-flow patterns, IP-to-IP communication, port/protocol
+    distribution, DNS activity, and GeoIP geographic data.
+
+    Field-schema documentation is handled exclusively by fields_baseliner
+    (data/fields_rag.json) and is NOT stored in the vector index here.
+
+    If existing_baselines ({category: prior_text}) is supplied, each LLM
+    prompt includes the prior summary so the model can update rather than
+    replace it.
 
     Returns list of dicts with "summary" and "category" for each baseline.
     """
     existing_baselines = existing_baselines or {}
     baselines = []
-    
-    # ── PRIMARY: Comprehensive Field Documentation ─────────────────────────────
-    # Generate a detailed field documentation that tells users exactly what data is available
-    discovered_fields = analytics.get("discovered_fields", {})
-    src_ips = analytics.get("source_ips", {})
-    dst_ips = analytics.get("dest_ips", {})
-    dest_ports = analytics.get("dest_ports", {})
-    protocols = analytics.get("protocols", {})
+
+    # Pull analytics fields used across all baseline types
     flow_stats = analytics.get("flow_stats", {})
-    dns = analytics.get("dns_queries", {})
-    geoip = analytics.get("geoip_data", {})
-    
-    if discovered_fields:
-        # Build a comprehensive field documentation
-        field_doc_lines = [
-            "COMPREHENSIVE FIELD DOCUMENTATION",
-            "=" * 60,
-            "",
-        ]
-        
-        # Sort fields by frequency
-        sorted_fields = sorted(discovered_fields.items(), key=lambda x: x[1], reverse=True)
-        total_records = flow_stats.get("total_flows", 1)
-        
-        for field_name, count in sorted_fields[:40]:  # Top 40 fields
-            frequency_pct = (count / total_records) * 100
-            
-            # Extract example values for this field from logs
-            field_doc_lines.append(f"\nFIELD: {field_name}")
-            field_doc_lines.append(f"  Frequency: {frequency_pct:.1f}% ({count} of {total_records} records)")
-            
-            # Try to infer field type and provide examples
-            if "@timestamp" in field_name:
-                field_doc_lines.append(f"  Type: ISO 8601 timestamp string")
-                field_doc_lines.append(f"  Description: When the network event occurred")
-                field_doc_lines.append(f"  Example: 2026-02-13T14:32:51.123Z")
-            
-            elif "ip" in field_name.lower() or "address" in field_name.lower():
-                field_doc_lines.append(f"  Type: IPv4 address string")
-                field_doc_lines.append(f"  Description: IP address involved in traffic")
-                # Get examples
-                if "source" in field_name.lower() or "orig" in field_name.lower():
-                    examples = list(src_ips.keys())[:3]
-                    field_doc_lines.append(f"  Examples: {', '.join(examples)}")
-                else:
-                    examples = list(dst_ips.keys())[:3]
-                    field_doc_lines.append(f"  Examples: {', '.join(examples)}")
-            
-            elif "port" in field_name.lower():
-                field_doc_lines.append(f"  Type: integer (1-65535)")
-                field_doc_lines.append(f"  Description: Port number in network traffic")
-                examples = list(dest_ports.keys())[:3]
-                field_doc_lines.append(f"  Examples: {', '.join(str(e) for e in examples)}")
-            
-            elif "protocol" in field_name.lower() or "proto" in field_name.lower() or "transport" in field_name.lower():
-                field_doc_lines.append(f"  Type: protocol name string")
-                field_doc_lines.append(f"  Description: Network protocol in use")
-                examples = list(protocols.keys())[:3]
-                if examples:
-                    field_doc_lines.append(f"  Examples: {', '.join(examples)}")
-            
-            elif "dns" in field_name.lower() or "query" in field_name.lower() or "domain" in field_name.lower():
-                field_doc_lines.append(f"  Type: domain name string")
-                field_doc_lines.append(f"  Description: DNS query or domain name")
-                examples = list(dns.keys())[:3]
-                if examples:
-                    field_doc_lines.append(f"  Examples: {', '.join(examples)}")
-            
-            elif "bytes" in field_name.lower():
-                field_doc_lines.append(f"  Type: integer")
-                field_doc_lines.append(f"  Description: Number of bytes transmitted")
-                field_doc_lines.append(f"  Example: {flow_stats.get('total_bytes', 0)}")
-            
-            elif "packet" in field_name.lower():
-                field_doc_lines.append(f"  Type: integer")
-                field_doc_lines.append(f"  Description: Number of packets")
-                field_doc_lines.append(f"  Example: {flow_stats.get('total_packets', 0)}")
-            
-            elif "geo" in field_name.lower():
-                field_doc_lines.append(f"  Type: geographic location string")
-                field_doc_lines.append(f"  Description: Country/city where IP is located")
-                examples = list(geoip.values())[:3]
-                if examples:
-                    field_doc_lines.append(f"  Examples: {', '.join(examples)}")
-            
-            else:
-                field_doc_lines.append(f"  Type: string or numeric")
-                field_doc_lines.append(f"  Description: Network traffic data")
-        
-        field_doc_lines.extend([
-            "",
-            "=" * 60,
-            "Use these field names exactly as shown when searching for specific data.",
-            "The LLM will use this documentation to extract answers from log records.",
-        ])
-        
-        field_doc_text = "\n".join(field_doc_lines)
-        
-        response = llm.chat([
-            {"role": "system", "content": "You are documenting data fields. Be precise and factual. Return exactly what was provided."},
-            {"role": "user", "content": _with_prior(
-                f"Document these fields perfectly:\n\n{field_doc_text}",
-                existing_baselines, 
-                "field_documentation"
-            )},
-        ])
-        baselines.append({
-            "summary": response,
-            "category": "field_documentation",
-        })
-    
+    ip_pairs   = analytics.get("ip_pairs", {})
+
     # ── NETWORK BEHAVIOR BASELINE ──────────────────────────────────────────────
-    # Document traffic patterns: IP-to-IP flows, volume trends, common connections
-    ip_pairs = analytics.get("ip_pairs", {})
-    flow_stats = analytics.get("flow_stats", {})
-    
+
     if ip_pairs or flow_stats:
         behavior_lines = [
             "NETWORK BASELINE BEHAVIOR PATTERNS",
@@ -1241,36 +1277,3 @@ def _parse_json_response(text: str) -> dict | None:
     return None
 
 
-def _format_schema_observation(discovered_fields: dict, identifier_field: str) -> str:
-    """
-    Format discovered fields as a schema observation document for RAG.
-    
-    This document helps future queries understand what fields are available
-    and their frequency, enabling smarter field selection for searches.
-    """
-    lines = [
-        "SCHEMA OBSERVATION",
-        f"Identifier field: {identifier_field}",
-        "",
-        "DETECTED FIELDS (by frequency):",
-    ]
-    
-    total_fields = sum(discovered_fields.values())
-    for field, count in list(discovered_fields.items())[:30]:
-        pct = (count / max(total_fields, 1)) * 100
-        lines.append(f"  {field}: {pct:.1f}% ({count} occurrences)")
-    
-    lines.extend([
-        "",
-        "FIELD CATEGORIES:",
-        "  IP-related: source.ip, src_ip, destination.ip, dest_ip, id.orig_h, id.resp_h",
-        "  Port-related: source.port, src_port, destination.port, dest_port, id.orig_p, id.resp_p",
-        "  Protocol: protocol, proto, transport, network.transport, app_proto",
-        "  Geographic: destination.geo, geoip, dest_geoip, country_name, city_name",
-        "  Timing: @timestamp, timestamp, event.created, event.duration",
-        "  Volume: bytes, bytes_sent, bytes_received, event.packets, network.bytes",
-        "",
-        "Use this schema to craft searches that will find the right fields.",
-    ])
-    
-    return "\n".join(lines)

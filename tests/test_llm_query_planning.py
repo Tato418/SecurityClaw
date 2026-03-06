@@ -5,14 +5,17 @@ Test that LLM query planning is data-agnostic:
 - LLM extracts intent (search terms, time range)
 - Python discovers fields and builds OpenSearch query
 - No knowledge of specific field names in LLM prompt
+
+NOTE: rag_querier has been deprecated. These tests are kept for reference.
 """
 import json
 from unittest.mock import MagicMock, patch
 import pytest
 
 
+@pytest.mark.skip(reason="rag_querier skill has been deprecated and removed")
 class TestLLMQueryPlanning:
-    """Test LLM-based query planning for data-agnostic searches."""
+    """Test LLM-based query planning for data-agnostic searches (DEPRECATED)."""
     
     def test_llm_plans_port_traffic_query_february(self):
         """

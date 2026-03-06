@@ -1,0 +1,41 @@
+name: baseline_querier
+description: >
+  Searches behavioral baselines (OpenSearch vector index) and raw logs.
+  Answers questions about observed traffic, IPs, ports, protocols, alerts, and
+  geographic patterns. Use for log search and behavior analysis.
+
+can_answer:
+  - "log searching and traffic analysis"
+  - "generic alert queries (no specific type)"
+  - "alert type / event type searching"
+  - "log message searching"
+  - "traffic from specific country / IP / port"
+  - "baseline comparison (what is normal?)"
+  - "protocol distribution"
+  - "byte transfer and flow metrics (when field names are already known)"
+  - "pattern analysis from raw logs"
+  - "top N alerts / events"
+
+cannot_answer:
+  - "field schema discovery (which field holds X?)"
+  - "direct IP reputation or threat intelligence"
+  - "incident timeline reconstruction"
+  - "real-time anomaly detection"
+  - "future predictions"
+  # For field schema questions, use fields_querier first
+
+priority_keywords:
+  - "traffic"
+  - "flow"
+  - "alert"
+  - "baseline"
+  - "from"
+  - "country"
+  - "protocol"
+
+min_prior_context: 0
+  # Can work standalone or after fields_querier has discovered field names
+
+returns:
+  - findings (question, answer, rag_sources, log_records, evidence, confidence)
+  - field_mappings (partial, from raw-log search)

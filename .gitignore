@@ -12,6 +12,8 @@
 .env
 config.yaml
 SITUATION.md
+.coverage
+htmlcov/
 
 # User-specific files (MonoDevelop/Xamarin Studio)
 *.userprefs
@@ -404,3 +406,4 @@ FodyWeavers.xsd
 *.sln.iml
 
 conversations/*
+data/*
