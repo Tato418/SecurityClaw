@@ -119,7 +119,7 @@ class TestThreatAnalystHistoryExtraction:
             {"role": "user", "content": "can you pull threat intel on this ip"}  # No IP in this message
         ]
         
-        with patch("core.reputation_intel.get_ip_reputation") as mock_intel:
+        with patch("skills.threat_analyst.reputation_intel.get_ip_reputation") as mock_intel:
             mock_intel.return_value = {
                 "ip": "62.60.131.168",
                 "combined_risk": "HIGH",
@@ -145,7 +145,7 @@ class TestThreatAnalystHistoryExtraction:
             {"role": "user", "content": "What threat intel is available?"}  # No domain here
         ]
         
-        with patch("core.reputation_intel.get_domain_reputation") as mock_intel:
+        with patch("skills.threat_analyst.reputation_intel.get_domain_reputation") as mock_intel:
             mock_intel.return_value = {
                 "domain": "malware.example.com",
                 "combined_risk": "CRITICAL",
@@ -168,7 +168,7 @@ class TestThreatAnalystHistoryExtraction:
             {"role": "user", "content": "Old IP was 1.2.3.4"}
         ]
         
-        with patch("core.reputation_intel.get_ip_reputation") as mock_intel:
+        with patch("skills.threat_analyst.reputation_intel.get_ip_reputation") as mock_intel:
             mock_intel.return_value = {
                 "ip": "192.168.1.1",
                 "combined_risk": "LOW",
@@ -185,7 +185,7 @@ class TestThreatAnalystHistoryExtraction:
         """_enrich_with_reputation should work fine with None history."""
         from skills.threat_analyst.logic import _enrich_with_reputation
         
-        with patch("core.reputation_intel.get_ip_reputation"):
+        with patch("skills.threat_analyst.reputation_intel.get_ip_reputation"):
             # Should not crash with None history
             result_string, queried_apis = _enrich_with_reputation("No IP here", None)
             

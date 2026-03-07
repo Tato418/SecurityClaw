@@ -19,14 +19,14 @@ class TestIPValidation:
     """Test IPv4 address validation."""
 
     def test_valid_ip(self):
-        from core.reputation_intel import _is_valid_ip
+        from skills.threat_analyst.reputation_intel import _is_valid_ip
         assert _is_valid_ip("1.2.3.4") is True
         assert _is_valid_ip("192.168.1.1") is True
         assert _is_valid_ip("255.255.255.255") is True
         assert _is_valid_ip("0.0.0.0") is True
 
     def test_invalid_ip_format(self):
-        from core.reputation_intel import _is_valid_ip
+        from skills.threat_analyst.reputation_intel import _is_valid_ip
         assert _is_valid_ip("999.999.999.999") is False
         assert _is_valid_ip("1.2.3") is False
         assert _is_valid_ip("1.2.3.4.5") is False
@@ -34,7 +34,7 @@ class TestIPValidation:
         assert _is_valid_ip("") is False
 
     def test_invalid_ip_ranges(self):
-        from core.reputation_intel import _is_valid_ip
+        from skills.threat_analyst.reputation_intel import _is_valid_ip
         assert _is_valid_ip("256.1.1.1") is False
         assert _is_valid_ip("1.256.1.1") is False
         assert _is_valid_ip("1.1.256.1") is False
@@ -45,13 +45,13 @@ class TestDomainValidation:
     """Test domain name validation."""
 
     def test_valid_domains(self):
-        from core.reputation_intel import _is_valid_domain
+        from skills.threat_analyst.reputation_intel import _is_valid_domain
         assert _is_valid_domain("example.com") is True
         assert _is_valid_domain("sub.example.com") is True
         assert _is_valid_domain("my-domain.co.uk") is True
 
     def test_invalid_domains(self):
-        from core.reputation_intel import _is_valid_domain
+        from skills.threat_analyst.reputation_intel import _is_valid_domain
         assert _is_valid_domain("notadomain") is False
         assert _is_valid_domain("example") is False
         assert _is_valid_domain(".example.com") is False
@@ -66,7 +66,7 @@ class TestRiskCalculation:
 
     def test_high_risk_from_multiple_sources(self):
         """HIGH risk requires multiple concordant sources (60+ points)."""
-        from core.reputation_intel import _calculate_combined_risk
+        from skills.threat_analyst.reputation_intel import _calculate_combined_risk
         intel = {
             "abuseipdb": {"abuse_score": 85},  # 40 points
             "alienvault": {"reputation": "malicious"},  # 40 points
@@ -76,7 +76,7 @@ class TestRiskCalculation:
 
     def test_medium_risk_from_single_abuseipdb(self):
         """Single AbuseIPDB high score = MEDIUM (40 < 60)."""
-        from core.reputation_intel import _calculate_combined_risk
+        from skills.threat_analyst.reputation_intel import _calculate_combined_risk
         intel = {
             "abuseipdb": {
                 "abuse_score": 85,  # 40 points
@@ -86,7 +86,7 @@ class TestRiskCalculation:
 
     def test_medium_risk_from_single_alienvault(self):
         """Single AlienVault malicious = MEDIUM (40 < 60)."""
-        from core.reputation_intel import _calculate_combined_risk
+        from skills.threat_analyst.reputation_intel import _calculate_combined_risk
         intel = {
             "alienvault": {
                 "reputation": "malicious",  # 40 points
@@ -96,7 +96,7 @@ class TestRiskCalculation:
 
     def test_medium_risk_from_single_virustotal(self):
         """Single VirusTotal high detection = MEDIUM (40 < 60)."""
-        from core.reputation_intel import _calculate_combined_risk
+        from skills.threat_analyst.reputation_intel import _calculate_combined_risk
         intel = {
             "virustotal": {
                 "malicious": 40,
@@ -110,7 +110,7 @@ class TestRiskCalculation:
 
     def test_medium_risk_combined_two_sources(self):
         """Two moderate sources = MEDIUM (30-59 points)."""
-        from core.reputation_intel import _calculate_combined_risk
+        from skills.threat_analyst.reputation_intel import _calculate_combined_risk
         intel = {
             "abuseipdb": {"abuse_score": 50},  # 25 points
             "alienvault": {"reputation": "suspicious"},  # 20 points
@@ -120,7 +120,7 @@ class TestRiskCalculation:
 
     def test_low_risk(self):
         """All clean sources = LOW."""
-        from core.reputation_intel import _calculate_combined_risk
+        from skills.threat_analyst.reputation_intel import _calculate_combined_risk
         intel = {
             "abuseipdb": {"abuse_score": 5},  # 0 points
             "alienvault": {"reputation": "clean"},  # 0 points
@@ -130,7 +130,7 @@ class TestRiskCalculation:
 
     def test_empty_intel(self):
         """No sources = LOW."""
-        from core.reputation_intel import _calculate_combined_risk
+        from skills.threat_analyst.reputation_intel import _calculate_combined_risk
         intel = {}
         assert _calculate_combined_risk(intel) == "LOW"
 
@@ -139,17 +139,17 @@ class TestIPReputation:
     """Test IP reputation lookup with mocked APIs."""
 
     def test_get_ip_reputation_invalid_ip(self):
-        from core.reputation_intel import get_ip_reputation
+        from skills.threat_analyst.reputation_intel import get_ip_reputation
         result = get_ip_reputation("999.999.999.999")
         assert result["ip"] == "999.999.999.999"
         assert result["combined_risk"] == "UNKNOWN"
         assert len(result["queries"]) == 0
 
-    @patch("core.reputation_intel.ABUSEIPDB_KEY", "test-key")
-    @patch("core.reputation_intel.requests.get")
+    @patch("skills.threat_analyst.reputation_intel.ABUSEIPDB_KEY", "test-key")
+    @patch("skills.threat_analyst.reputation_intel.requests.get")
     def test_abuseipdb_query_success(self, mock_get):
         """Test successful AbuseIPDB query."""
-        from core.reputation_intel import get_ip_reputation
+        from skills.threat_analyst.reputation_intel import get_ip_reputation
         
         # Mock response
         mock_resp = Mock()
@@ -173,11 +173,11 @@ class TestIPReputation:
         assert result["abuseipdb"]["reports"] == 5
         assert "abuseipdb" in result["queries"]
 
-    @patch("core.reputation_intel.ABUSEIPDB_KEY", "test-key")
-    @patch("core.reputation_intel.requests.get")
+    @patch("skills.threat_analyst.reputation_intel.ABUSEIPDB_KEY", "test-key")
+    @patch("skills.threat_analyst.reputation_intel.requests.get")
     def test_abuseipdb_query_timeout(self, mock_get):
         """Test graceful handling of API timeout."""
-        from core.reputation_intel import get_ip_reputation
+        from skills.threat_analyst.reputation_intel import get_ip_reputation
         
         mock_get.side_effect = TimeoutError("Connection timeout")
         
@@ -188,10 +188,10 @@ class TestIPReputation:
         assert "abuseipdb" not in result
         assert result.get("combined_risk") in ["LOW", "UNKNOWN", "MEDIUM", "HIGH"]
 
-    @patch("core.reputation_intel.ABUSEIPDB_KEY", "")
+    @patch("skills.threat_analyst.reputation_intel.ABUSEIPDB_KEY", "")
     def test_abuseipdb_skipped_without_key(self):
         """Test that AbuseIPDB is skipped without API key."""
-        from core.reputation_intel import get_ip_reputation
+        from skills.threat_analyst.reputation_intel import get_ip_reputation
         
         result = get_ip_reputation("1.2.3.4")
         
@@ -204,17 +204,17 @@ class TestDomainReputation:
     """Test domain reputation lookup with mocked APIs."""
 
     def test_get_domain_reputation_invalid_domain(self):
-        from core.reputation_intel import get_domain_reputation
+        from skills.threat_analyst.reputation_intel import get_domain_reputation
         result = get_domain_reputation("notadomain")
         assert result["domain"] == "notadomain"
         assert result["combined_risk"] == "UNKNOWN"
         assert len(result["queries"]) == 0
 
-    @patch("core.reputation_intel.ALIENVAULT_KEY", "test-key")
-    @patch("core.reputation_intel.requests.get")
+    @patch("skills.threat_analyst.reputation_intel.ALIENVAULT_KEY", "test-key")
+    @patch("skills.threat_analyst.reputation_intel.requests.get")
     def test_alienvault_query_success(self, mock_get):
         """Test successful AlienVault query."""
-        from core.reputation_intel import get_domain_reputation
+        from skills.threat_analyst.reputation_intel import get_domain_reputation
         
         # Mock response with 3 pulses (->suspicious, not malicious which needs >5)
         mock_resp = Mock()
@@ -239,10 +239,10 @@ class TestDomainReputation:
         assert result["alienvault"]["reputation"] == "suspicious"
         assert "alienvault" in result["queries"]
 
-    @patch("core.reputation_intel.ALIENVAULT_KEY", "")
+    @patch("skills.threat_analyst.reputation_intel.ALIENVAULT_KEY", "")
     def test_alienvault_skipped_without_key(self):
         """Test that AlienVault is skipped without API key."""
-        from core.reputation_intel import get_domain_reputation
+        from skills.threat_analyst.reputation_intel import get_domain_reputation
         
         result = get_domain_reputation("example.com")
         
@@ -259,8 +259,8 @@ class TestReputationIntegration:
         from skills.threat_analyst.logic import _enrich_with_reputation
         
         # Mock the reputation module at the call site
-        with patch("core.reputation_intel.get_ip_reputation") as mock_get_ip, \
-             patch("core.reputation_intel.get_domain_reputation") as mock_get_domain:
+        with patch("skills.threat_analyst.reputation_intel.get_ip_reputation") as mock_get_ip, \
+             patch("skills.threat_analyst.reputation_intel.get_domain_reputation") as mock_get_domain:
             
             mock_get_ip.return_value = {
                 "ip": "1.2.3.4",
@@ -288,7 +288,7 @@ class TestReputationIntegration:
         """Test that enrichment limits to 5 IPs for performance."""
         from skills.threat_analyst.logic import _enrich_with_reputation
         
-        with patch("core.reputation_intel.get_ip_reputation") as mock_get_ip:
+        with patch("skills.threat_analyst.reputation_intel.get_ip_reputation") as mock_get_ip:
             mock_get_ip.return_value = {
                 "ip": "1.1.1.1",
                 "combined_risk": "LOW",
@@ -315,11 +315,11 @@ class TestReputationIntegration:
 class TestReputableIPsAreNotFlagged:
     """Test that legitimate IPs with good reputation don't raise false positives."""
 
-    @patch("core.reputation_intel.ABUSEIPDB_KEY", "test-key")
-    @patch("core.reputation_intel.requests.get")
+    @patch("skills.threat_analyst.reputation_intel.ABUSEIPDB_KEY", "test-key")
+    @patch("skills.threat_analyst.reputation_intel.requests.get")
     def test_google_dns_clean_reputation(self, mock_get):
         """Test that 8.8.8.8 (Google DNS) shows clean reputation."""
-        from core.reputation_intel import get_ip_reputation
+        from skills.threat_analyst.reputation_intel import get_ip_reputation
         
         mock_resp = Mock()
         mock_resp.json.return_value = {
@@ -349,15 +349,15 @@ class TestAPIKeyConfiguration:
         """Test that API keys are loaded from environment variables."""
         # This is more of an integration test - reload the module
         import importlib
-        import core.reputation_intel
-        importlib.reload(core.reputation_intel)
+        import skills.threat_analyst.reputation_intel
+        importlib.reload(skills.threat_analyst.reputation_intel)
         
-        from core.reputation_intel import ABUSEIPDB_KEY
+        from skills.threat_analyst.reputation_intel import ABUSEIPDB_KEY
         assert ABUSEIPDB_KEY == "test-key-123"
 
     def test_missing_keys_gracefully_skipped(self):
         """Test that missing keys don't cause errors."""
-        from core.reputation_intel import get_ip_reputation
+        from skills.threat_analyst.reputation_intel import get_ip_reputation
         
         # Even with no API keys, should return valid structure
         result = get_ip_reputation("1.2.3.4")

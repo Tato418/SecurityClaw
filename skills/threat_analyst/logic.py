@@ -112,13 +112,22 @@ def _analyze_finding(finding_desc: str, instruction: str, rag, llm,
     # Pass conversation history to help extract IPs/domains from context
     reputation_context, queried_apis = _enrich_with_reputation(finding_desc, conversation_history)
 
+    # Only include baseline context if relevant information was actually found
+    # Avoid including "No relevant context found" which misleads the LLM
+    has_relevant_baseline = "_No relevant context found._" not in rag_context
+    
+    if has_relevant_baseline:
+        baseline_section = f"**Baseline Context:**\n{rag_context}\n\n"
+    else:
+        baseline_section = ""
+
     messages = [
         {"role": "system", "content": instruction},
         {
             "role": "user",
             "content": (
                 f"**Anomaly Finding:**\n{finding_desc}\n\n"
-                f"**Baseline Context:**\n{rag_context}\n\n"
+                f"{baseline_section}"
                 f"**Reputation Intelligence:**\n{reputation_context}\n\n"
                 "Based on the above context and reputation data, provide your verdict."
             ),
@@ -201,7 +210,7 @@ def _enrich_with_reputation(finding_desc: str, conversation_history: list[dict] 
         tuple of (formatted_reputation_string, list_of_queried_apis)
     """
     try:
-        from core.reputation_intel import get_ip_reputation, get_domain_reputation
+        from skills.threat_analyst.reputation_intel import get_ip_reputation, get_domain_reputation
     except ImportError:
         logger.warning("[%s] reputation_intel module not available", SKILL_NAME)
         return "No external reputation data available.", []

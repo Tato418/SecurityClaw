@@ -17,7 +17,7 @@ class TestIssue1ThreatAnalystEnrichment:
         """_enrich_with_reputation should extract IPs from question text directly."""
         from skills.threat_analyst.logic import _enrich_with_reputation
         
-        with patch("core.reputation_intel.get_ip_reputation") as mock_get_ip:
+        with patch("skills.threat_analyst.reputation_intel.get_ip_reputation") as mock_get_ip:
             mock_get_ip.return_value = {
                 "ip": "62.60.131.168",
                 "abuseipdb": {"abuse_score": 75},
@@ -107,7 +107,7 @@ class TestThreatAnalystExtractionFromQuestion:
         """_enrich_with_reputation should use IPs extracted from the input string."""
         from skills.threat_analyst.logic import _enrich_with_reputation
         
-        with patch("core.reputation_intel.get_ip_reputation") as mock_get_ip:
+        with patch("skills.threat_analyst.reputation_intel.get_ip_reputation") as mock_get_ip:
             mock_get_ip.return_value = {
                 "ip": "62.60.131.168",
                 "combined_risk": "HIGH",

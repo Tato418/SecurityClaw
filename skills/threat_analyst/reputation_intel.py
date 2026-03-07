@@ -1,5 +1,5 @@
 """
-core/reputation_intel.py
+skills/threat_analyst/reputation_intel.py
 
 Fetches reputation intelligence for IPs and domains from public APIs:
 - AbuseIPDB: IP abuse history

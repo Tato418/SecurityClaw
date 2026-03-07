@@ -48,7 +48,7 @@ class TestThreatIntelWorkflow:
             mock_rag.build_context_string.return_value = "Baseline: normal traffic"
             mock_rag_class.return_value = mock_rag
             
-            with patch("core.reputation_intel.get_ip_reputation") as mock_get_ip:
+            with patch("skills.threat_analyst.reputation_intel.get_ip_reputation") as mock_get_ip:
                 mock_get_ip.return_value = {
                     "ip": "62.60.131.168",
                     "abuseipdb": {"abuse_score": 75, "reports": 42},
@@ -112,7 +112,7 @@ class TestThreatIntelWorkflow:
             {"role": "user", "content": "Get threat intel"}  # No IPs here
         ]
         
-        with patch("core.reputation_intel.get_ip_reputation") as mock_intel:
+        with patch("skills.threat_analyst.reputation_intel.get_ip_reputation") as mock_intel:
             # Mock different risks for different IPs
             def get_intel_side_effect(ip):
                 if ip == "62.60.131.168":
@@ -149,7 +149,7 @@ class TestThreatIntelWorkflow:
         """Reputation data should be properly formatted for LLM consumption."""
         from skills.threat_analyst.logic import _enrich_with_reputation
         
-        with patch("core.reputation_intel.get_ip_reputation") as mock_intel:
+        with patch("skills.threat_analyst.reputation_intel.get_ip_reputation") as mock_intel:
             mock_intel.return_value = {
                 "ip": "8.8.8.8",
                 "abuseipdb": {
@@ -193,7 +193,7 @@ class TestThreatIntelWorkflow:
             {"role": "user", "content": "What is normal baseline traffic?"}
         ]
         
-        with patch("core.reputation_intel.get_ip_reputation"):
+        with patch("skills.threat_analyst.reputation_intel.get_ip_reputation"):
             # Question and history have no IPs
             result_string, queried_apis = _enrich_with_reputation(
                 "Can you explain the baseline?",
@@ -213,7 +213,7 @@ class TestThreatIntelWorkflow:
             {"role": "user", "content": "Old IP: 1.2.3.4"}
         ]
         
-        with patch("core.reputation_intel.get_ip_reputation") as mock_intel:
+        with patch("skills.threat_analyst.reputation_intel.get_ip_reputation") as mock_intel:
             mock_intel.return_value = {
                 "ip": "8.8.8.8",
                 "combined_risk": "LOW",
