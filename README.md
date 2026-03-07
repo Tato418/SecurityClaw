@@ -100,15 +100,17 @@ SecurityClaw/
 │   └── rag_engine.py          # Embedding store & retrieval
 │
 ├── skills/
+│   ├── chat_router/            # API-only: Routes user questions to skills
 │   ├── network_baseliner/     # 6h: Aggregate logs → RAG vectors
-│   │   ├── logic.py
-│   │   └── instruction.md
-│   ├── anomaly_triage/        # 1m: Poll AD findings → enrich → escalate
-│   │   ├── logic.py
-│   │   └── instruction.md
-│   └── threat_analyst/        # 5m: RAG reasoning → verdict (TRUE_THREAT/FALSE_POSITIVE)
-│       ├── logic.py
-│       └── instruction.md
+│   ├── fields_baseliner/      # 1h: Catalog OpenSearch field schemas
+│   ├── anomaly_triage/        # Manual: Poll AD findings → enrich → escalate
+│   ├── threat_analyst/        # Manual: RAG reasoning → verdict
+│   ├── opensearch_querier/    # Manual: Execute database queries
+│   ├── forensic_examiner/     # Manual: Build incident timelines
+│   ├── baseline_querier/      # Manual: Search behavioral baselines
+│   ├── fields_querier/        # Manual: Query field schema catalog
+│   ├── geoip_lookup/          # Cron (Tue/Fri 2 AM UTC): Maintain MaxMind DB
+│   └── rag_querier/           # Manual: RAG context retrieval
 │
 ├── tests/
 │   ├── conftest.py            # Shared fixtures
@@ -149,11 +151,11 @@ SecurityClaw/
 
 **Output**: Baseline vectors used by ThreatAnalyst for context.
 
-### AnomalyWatcher (1-minute cycle)
+### AnomalyTriage (Manual)
 
 **Purpose**: Poll anomaly detection findings and escalate high-confidence anomalies.
 
-**Publication note**: this skill is still under active validation in real environments. Keep it marked experimental for now.
+**Publication note**: This skill is in active validation. Convert to scheduled by adding `schedule_interval_seconds: 60` to `instruction.md`.
 
 **Logic**:
 1. Query OpenSearch AD index for new findings (cursor-based, from last poll)
@@ -163,9 +165,11 @@ SecurityClaw/
 
 **Output**: Escalated findings in memory, waiting for ThreatAnalyst analysis.
 
-### ThreatAnalyst (5-minute cycle)
+### ThreatAnalyst (Manual)
 
 **Purpose**: Analyze escalated findings using RAG context; issue verdict.
+
+**Publication note**: This skill is in active validation. Convert to scheduled by adding `schedule_interval_seconds: 300` to `instruction.md`.
 
 **Logic**:
 1. Read the escalation queue from agent memory
@@ -191,9 +195,24 @@ SecurityClaw/
 
 ### Publication Status Notes
 
-- **AnomalyWatcher** — available, but still in-progress for broader real-world validation.
-- **ForensicExaminer** — available, but still in-progress for broader real-world validation.
-- **BaselineQuerier** — available, but still in-progress and not yet publication-hardened.
+| Skill | Status | Notes |
+|-------|--------|-------|
+| **chat_router** | Stable | Powers web interface and API |
+| **network_baseliner** | Stable | Builds behavioral baselines from logs |
+| **fields_baseliner** | Stable | Catalogs OpenSearch field schemas |
+| **anomaly_triage** | In-Progress | Manual skill; enable scheduling in instruction.md |
+| **threat_analyst** | In-Progress | Manual skill; enable scheduling in instruction.md |
+| **opensearch_querier** | Stable | Single point of contact for DB queries |
+| **forensic_examiner** | In-Progress | Timeline reconstruction; active development |
+| **baseline_querier** | In-Progress | Search behavioral baselines; not publication-hardened |
+| **fields_querier** | Stable | Search field schema catalog |
+| **geoip_lookup** | Stable | MaxMind GeoLite2 maintenance and lookups |
+| **rag_querier** | Stable | RAG context retrieval |
+
+**Legend**:
+- **Stable**: Publication-ready; tested in production patterns
+- **In-Progress**: Under active validation; feedback welcome
+- **Deprecated**: Use alternative skill; kept for backwards compatibility
 
 ---
 
@@ -289,8 +308,14 @@ OLLAMA_BASE_URL=http://localhost:11434
 # Interactive setup
 .venv/bin/python main.py onboard
 
-# Run the full agent (blocks; press Ctrl+C to stop)
+# Start web interface + backend API + scheduler
+.venv/bin/python main.py service
+
+# Run the CLI agent (blocks; press Ctrl+C to stop)
 .venv/bin/python main.py run
+
+# Interactive chat in CLI
+.venv/bin/python main.py chat
 
 # Fire one skill immediately
 .venv/bin/python main.py dispatch anomaly_triage

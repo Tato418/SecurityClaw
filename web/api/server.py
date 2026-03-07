@@ -246,10 +246,15 @@ def create_app(*, enable_scheduler: bool = True) -> FastAPI:
     app = FastAPI(title="SecurityClaw Service", lifespan=lifespan)
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["*"],
-        allow_methods=["*"],
-        allow_headers=["*"],
-        allow_credentials=True,
+        allow_origins=[
+            "http://localhost:3000",
+            "http://localhost:5173",
+            "http://127.0.0.1:3000",
+            "http://127.0.0.1:5173",
+        ],
+        allow_methods=["GET", "POST", "PUT", "DELETE"],
+        allow_headers=["content-type"],
+        allow_credentials=False,
     )
 
     @app.get("/api/status")
@@ -265,10 +270,6 @@ def create_app(*, enable_scheduler: bool = True) -> FastAPI:
             "generated_at": datetime.now(timezone.utc).isoformat(),
         }
 
-    @app.get("/api/situation")
-    async def situation() -> dict[str, str]:
-        return {"content": "SITUATION.md is deprecated and no longer exposed by the web service."}
-
     @app.get("/api/conversations")
     async def conversations() -> dict[str, Any]:
         return {"items": list_conversations()}
@@ -283,7 +284,17 @@ def create_app(*, enable_scheduler: bool = True) -> FastAPI:
 
     @app.delete("/api/conversations/{conversation_id}")
     async def delete_conversation(conversation_id: str) -> dict[str, str]:
-        conv_path = ROOT / "conversations" / f"{conversation_id}.json"
+        # Security: Validate conversation_id contains only safe characters
+        if not all(c.isalnum() or c in '-_' for c in conversation_id):
+            raise HTTPException(status_code=400, detail="Invalid conversation ID format")
+        
+        conv_path = (ROOT / "conversations" / f"{conversation_id}.json").resolve()
+        safe_dir = (ROOT / "conversations").resolve()
+        
+        # Security: Ensure resolved path is within conversations directory (prevent path traversal)
+        if not str(conv_path).startswith(str(safe_dir)):
+            raise HTTPException(status_code=403, detail="Access denied")
+        
         if conv_path.exists():
             conv_path.unlink()
         return {"status": "ok"}
@@ -301,18 +312,40 @@ def create_app(*, enable_scheduler: bool = True) -> FastAPI:
 
     @app.put("/api/skills/{skill_name}/manifest")
     async def save_skill_manifest(skill_name: str, body: SaveTextRequest) -> dict[str, str]:
+        # Security: Validate skill_name contains only safe characters
+        if not all(c.isalnum() or c == '_' for c in skill_name):
+            raise HTTPException(status_code=400, detail="Invalid skill name format")
+        
         skill_dir = SKILLS_DIR / skill_name
+        safe_dir = SKILLS_DIR.resolve()
+        
+        # Security: Ensure resolved path is within skills directory (prevent path traversal)
+        if not skill_dir.resolve().parent == safe_dir:
+            raise HTTPException(status_code=403, detail="Access denied")
+        
         if not skill_dir.exists():
             raise HTTPException(status_code=404, detail="Skill not found")
+        
         yaml.safe_load(body.content or "{}")
         (skill_dir / "manifest.yaml").write_text(body.content, encoding="utf-8")
         return {"status": "ok"}
 
     @app.put("/api/skills/{skill_name}/instruction")
     async def save_skill_instruction(skill_name: str, body: SaveTextRequest) -> dict[str, str]:
+        # Security: Validate skill_name contains only safe characters
+        if not all(c.isalnum() or c == '_' for c in skill_name):
+            raise HTTPException(status_code=400, detail="Invalid skill name format")
+        
         skill_dir = SKILLS_DIR / skill_name
+        safe_dir = SKILLS_DIR.resolve()
+        
+        # Security: Ensure resolved path is within skills directory (prevent path traversal)
+        if not skill_dir.resolve().parent == safe_dir:
+            raise HTTPException(status_code=403, detail="Access denied")
+        
         if not skill_dir.exists():
             raise HTTPException(status_code=404, detail="Skill not found")
+        
         (skill_dir / "instruction.md").write_text(body.content, encoding="utf-8")
         return {"status": "ok"}
 

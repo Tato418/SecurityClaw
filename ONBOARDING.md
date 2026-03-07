@@ -80,11 +80,17 @@ The `.env` file contains:
 
 Output example:
 ```
-  anomaly_triage — every 60s
+  chat_router — manual
   network_baseliner — every 21600s
-  threat_analyst — every 300s
-  geoip_lookup — manual
+  fields_baseliner — every 3600s
+  anomaly_triage — manual
+  threat_analyst — manual
+  geoip_lookup — cron: 0 2 * * tue,fri
+  opensearch_querier — manual
+  forensic_examiner — manual
 ```
+
+Note: `anomaly_triage` and `threat_analyst` can be converted to scheduled by adding `schedule_interval_seconds` to their `instruction.md` files.
 
 Each skill declares:
 - Its **schedule** (interval or manual)
@@ -129,9 +135,11 @@ The agent will:
 
 ### Feature Maturity Notes
 
-- **anomaly_triage** — still in progress for broader real-environment validation.
-- **forensic_examiner** — still in progress for broader real-environment validation.
-- **baseline_querier** — still in progress and not yet publication-hardened.
+- **anomaly_triage** — in progress; currently manual-only but can be converted to scheduled
+- **threat_analyst** — in progress; currently manual-only but can be converted to scheduled
+- **forensic_examiner** — in progress for broader real-environment validation
+- **baseline_querier** — in progress and not yet publication-hardened
+- **fields_baseliner** — production; catalogs OpenSearch field schemas hourly
 
 ---
 
