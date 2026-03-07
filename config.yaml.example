@@ -39,9 +39,14 @@ anomaly:
   max_findings_per_poll: 50
 geoip:
   enabled: true
+  # Local path where GeoLite2-City.mmdb will be stored
   db_path: data/geoip/GeoLite2-City.mmdb
+  # MaxMind edition ID to download
   edition_id: GeoLite2-City
+  # How many days old the DB can be before refresh (default: 7)
+  # Skill runs on Tu/Fr to match MaxMind's release schedule
   update_interval_days: 7
+  # MaxMind official API endpoint for downloads
   download_url: https://download.maxmind.com/app/geoip_download
   timeout_seconds: 60
   # License key loaded from .env: MAXMIND_LICENSE_KEY

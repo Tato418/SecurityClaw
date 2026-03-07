@@ -145,3 +145,72 @@ def test_format_response_forensic_is_detailed_and_multi_paragraph():
     assert "IPs involved" in output
     assert "Ports involved" in output
     assert "Reputation and threat intel" in output
+
+
+def test_format_response_prefers_opensearch_over_geoip_maintenance_only_result():
+    routing = {"skills": ["opensearch_querier", "geoip_lookup"]}
+    skill_results = {
+        "opensearch_querier": {
+            "status": "ok",
+            "results_count": 2,
+            "results": [
+                {
+                    "alert.signature": "ET DROP Dshield Block Listed Source group 1",
+                    "src_ip": "1.2.3.4",
+                    "dest_ip": "5.6.7.8",
+                    "geoip.country_name": "Iran",
+                },
+                {
+                    "alert.signature": "ET DROP Spamhaus DROP Listed Traffic Inbound group 9",
+                    "src_ip": "9.9.9.9",
+                    "dest_ip": "5.6.7.8",
+                    "geoip.country_name": "Russia",
+                },
+            ],
+            "search_terms": ["ET DROP"],
+            "time_range": "now-90d",
+        },
+        "geoip_lookup": {
+            "status": "ok",
+            "action": "ready",
+            "db_path": "/tmp/GeoLite2-City.mmdb",
+        },
+    }
+
+    output = format_response(
+        "what were the IPs associated with ET DROP? What countries are they from?",
+        routing,
+        skill_results,
+        _LLMUnused(),
+        cfg=None,
+    )
+
+    assert "GeoIP database check complete" not in output
+    assert "IPs seen in matching alerts" in output
+    assert "Countries seen in matching alerts" in output
+
+
+def test_format_response_uses_geoip_followup_results_for_multiple_previous_ips():
+    output = format_response(
+        "what country are these ips from?",
+        {"skills": ["geoip_lookup"]},
+        {
+            "geoip_lookup": {
+                "status": "ok",
+                "action": "ready",
+                "db_path": "/tmp/GeoLite2-City.mmdb",
+                "lookups": [
+                    {"status": "ok", "ip": "147.185.132.112", "geo": {"country": "United States", "subdivision": "California", "city": "Los Angeles"}},
+                    {"status": "ok", "ip": "167.94.138.130", "geo": {"country": "United States"}},
+                    {"status": "not_found", "ip": "192.168.0.16"},
+                ],
+            }
+        },
+        _LLMUnused(),
+        cfg=None,
+    )
+
+    assert "Resolved GeoIP for the referenced IPs" in output
+    assert "147.185.132.112: Los Angeles, California, United States" in output
+    assert "167.94.138.130: United States" in output
+    assert "192.168.0.16: not found" in output

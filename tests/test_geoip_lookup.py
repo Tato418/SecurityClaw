@@ -180,3 +180,61 @@ def test_format_response_renders_geoip_result_without_llm():
     assert "8.8.8.8" in rendered
     assert "United States" in rendered
     assert "California" in rendered
+
+
+def test_geoip_lookup_uses_previous_results_for_followup_country_question(monkeypatch, tmp_path):
+    db_path = tmp_path / "GeoLite2-City.mmdb"
+    db_path.write_bytes(b"existing-mmdb")
+    cfg = _Cfg(db_path)
+
+    monkeypatch.setattr(
+        "skills.geoip_lookup.logic._open_reader",
+        lambda path: _Reader(_fake_geo_response()),
+    )
+
+    result = run(
+        {
+            "config": cfg,
+            "parameters": {"question": "what country are these ips from?"},
+            "previous_results": {
+                "opensearch_querier": {
+                    "results": [
+                        {"src_ip": "8.8.8.8", "dest_ip": "1.1.1.1"},
+                        {"source.ip": "8.8.4.4", "destination.ip": "1.0.0.1"},
+                    ]
+                }
+            },
+            "memory": None,
+        }
+    )
+
+    assert result["status"] == "ok"
+    assert len(result.get("lookups", [])) == 4
+    assert result["lookups"][0]["geo"]["country"] == "United States"
+
+
+def test_format_response_renders_multi_ip_geoip_result_without_llm():
+    class _LLM:
+        def chat(self, messages):
+            raise AssertionError("LLM should not be used for geoip formatter")
+
+    rendered = format_response(
+        "What country are these IPs from?",
+        {"skills": ["geoip_lookup"], "parameters": {}},
+        {
+            "geoip_lookup": {
+                "status": "ok",
+                "action": "ready",
+                "db_path": "/tmp/GeoLite2-City.mmdb",
+                "lookups": [
+                    {"status": "ok", "ip": "8.8.8.8", "geo": {"country": "United States", "subdivision": "California", "city": "Mountain View"}},
+                    {"status": "not_found", "ip": "192.168.0.16"},
+                ],
+            }
+        },
+        _LLM(),
+    )
+
+    assert "8.8.8.8" in rendered
+    assert "United States" in rendered
+    assert "192.168.0.16: not found" in rendered

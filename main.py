@@ -277,8 +277,12 @@ def list_skills():
         console.print("[yellow]No skills found.[/]")
         return
     for name, skill in skills.items():
-        interval = skill.schedule_interval_seconds or "?"
-        console.print(f"  [cyan]{name}[/] — every [magenta]{interval}s[/]")
+        if skill.schedule_cron_expr:
+            schedule = f"cron: [magenta]{skill.schedule_cron_expr}[/]"
+        else:
+            interval = skill.schedule_interval_seconds or "?"
+            schedule = f"every [magenta]{interval}s[/]"
+        console.print(f"  [cyan]{name}[/] — {schedule}")
 
 
 @cli.command()

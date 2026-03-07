@@ -142,6 +142,7 @@ ALWAYS ANSWER WITH A JSON OBJECT (strictly, no markdown):
             user_question=user_question,
             selected_skills=result.get("skills", []),
             available_skills=available_skills,
+            current_results={},
         )
         result["skills"] = _enforce_evidence_then_threat_intel(
             user_question=user_question,
@@ -187,6 +188,7 @@ def _prepend_field_discovery_for_data_types(
     user_question: str,
     selected_skills: list[str],
     available_skills: list[dict],
+    current_results: dict | None = None,
 ) -> list[str]:
     """Prepend fields_querier when asking about specific data types (alerts, events, signatures, etc.).
 
@@ -200,6 +202,7 @@ def _prepend_field_discovery_for_data_types(
         return selected_skills
 
     question_lower = user_question.lower().strip()
+    current_results = current_results or {}
     
     # Keywords indicating query is about a specific data type
     data_type_keywords = [
@@ -207,10 +210,40 @@ def _prepend_field_discovery_for_data_types(
         "suricata", "snort", "rule", "rules", "events", "event type",
         "protocol mismatch", "dns queries", "tls certificates", "http requests",
     ]
+    search_intent_keywords = [
+        "show me", "show", "find", "list", "any", "how many", "search",
+        "check", "check for", "look for", "get", "pull", "display",
+        "which ip", "what ip", "their ip", "their ips", "source ip", "destination ip",
+    ]
+    field_schema_only_keywords = [
+        "what fields", "which field", "field name", "field names", "schema",
+        "available fields", "what field holds", "which field stores",
+    ]
     
     asks_about_data_type = any(kw in question_lower for kw in data_type_keywords)
+    asks_for_search = any(kw in question_lower for kw in search_intent_keywords)
+    asks_only_for_schema = any(kw in question_lower for kw in field_schema_only_keywords)
+    fields_result = current_results.get("fields_querier") or {}
+    field_discovery_already_done = bool(
+        isinstance(fields_result, dict)
+        and (
+            fields_result.get("field_mappings")
+            or (fields_result.get("findings") or {}).get("field_mappings")
+        )
+    )
 
     if asks_about_data_type:
+        if asks_only_for_schema:
+            return ["fields_querier"] + [s for s in selected_skills if s != "fields_querier"]
+
+        if field_discovery_already_done and "opensearch_querier" in available:
+            logger.info(
+                "[%s] Field discovery already available for data-type question — promoting opensearch_querier",
+                SKILL_NAME,
+            )
+            ordered = [s for s in selected_skills if s not in {"fields_querier", "opensearch_querier"}]
+            return ["opensearch_querier"] + ordered
+
         # First discover what fields hold this data, then search
         logger.info(
             "[%s] Question asks about specific data type — prepending fields_querier for field discovery",
@@ -221,9 +254,7 @@ def _prepend_field_discovery_for_data_types(
         # Prepend fields_querier only once
         ordered = ["fields_querier"] + [s for s in filtered if s != "fields_querier"]
         # If we removed opensearch_querier, add it back after fields_querier
-        if "opensearch_querier" not in ordered and any(
-            s in question_lower for s in ["show me", "find", "list", "any", "how many", "search"]
-        ):
+        if "opensearch_querier" in available and "opensearch_querier" not in ordered and asks_for_search:
             ordered.append("opensearch_querier")
         return ordered
 
@@ -804,6 +835,7 @@ CRITICAL RULES:
             user_question=user_question,
             selected_skills=parsed.get("skills", []),
             available_skills=available_skills,
+            current_results=current_results,
         )
         parsed["skills"] = _enforce_evidence_then_threat_intel(
             user_question=user_question,
@@ -1112,7 +1144,8 @@ def format_response(
         return _format_forensic_response(user_question, forensic_result, skill_results.get("threat_analyst", {}))
 
     geoip_result = skill_results.get("geoip_lookup", {})
-    if geoip_result and geoip_result.get("status") in {"ok", "not_found"}:
+    geoip_has_lookup = bool(geoip_result.get("ip") or geoip_result.get("status") == "not_found")
+    if geoip_result and geoip_result.get("status") in {"ok", "not_found"} and geoip_has_lookup:
         return _format_geoip_response(geoip_result)
 
     # ── PRIORITIZE OPENSEARCH/RAG BY DATA AVAILABILITY ──────────────────────
@@ -1131,6 +1164,9 @@ def format_response(
         if threat_result and threat_result.get("status") == "ok":
             response = _append_threat_intel_summary(response, threat_result)
         return response
+
+    if geoip_result and geoip_result.get("status") in {"ok", "not_found"}:
+        return _format_geoip_response(geoip_result)
     
     # Only return RAG if it has actual log records (not just schema/findings)
     if rag_has_data:
@@ -1390,7 +1426,7 @@ def _format_opensearch_response(user_question: str, os_result: dict) -> str:
     # If the question is about alerts/signatures, show alert-specific information
     question_lower = user_question.lower()
     is_alert_query = any(kw in question_lower for kw in [
-        "alert", "signature", "et exploit", "et rule", "suricata", "snort", "rule"
+        "alert", "signature", "et exploit", "et rule", "et drop", "et policy", "suricata", "snort", "rule"
     ])
     
     if is_alert_query:
@@ -1399,6 +1435,7 @@ def _format_opensearch_response(user_question: str, os_result: dict) -> str:
         alert_types: set = set()
         alert_count_by_sig: dict = {}
         alert_ips: set = set()
+        alert_countries: set = set()
         alert_timestamps: list[str] = []
         
         for row in results:
@@ -1421,11 +1458,27 @@ def _format_opensearch_response(user_question: str, os_result: dict) -> str:
             for value in (
                 row.get("src_ip"),
                 row.get("dest_ip"),
+                row.get("source.ip"),
+                row.get("destination.ip"),
                 row.get("source", {}).get("ip") if isinstance(row.get("source"), dict) else None,
                 row.get("destination", {}).get("ip") if isinstance(row.get("destination"), dict) else None,
             ):
                 if value:
                     alert_ips.add(str(value))
+
+            geo = row.get("geoip") or {}
+            if isinstance(geo, dict):
+                for cn in (geo.get("country_name"), geo.get("country")):
+                    if cn:
+                        alert_countries.add(str(cn))
+            for cn in (
+                row.get("geoip.country_name"),
+                row.get("country_name"),
+                row.get("source.geo.country_name"),
+                row.get("destination.geo.country_name"),
+            ):
+                if cn:
+                    alert_countries.add(str(cn))
         
         # Build alert-focused summary
         summary = f"Found {results_count} alert record(s) matching {' / '.join(search_terms)} in the {time_range} window."
@@ -1438,10 +1491,16 @@ def _format_opensearch_response(user_question: str, os_result: dict) -> str:
             detail_parts.append(f"Alert categories: {', '.join(sorted(alert_types))}.")
         asks_for_alert_details = any(
             term in question_lower
-            for term in ["what ip", "which ip", "when did", "when was", "timestamp", "what time", "alert happen"]
+            for term in [
+                "what ip", "which ip", "their ip", "their ips", "source ip", "destination ip",
+                "what countr", "which countr", "what countries", "what country", "where are they from",
+                "when did", "when was", "timestamp", "what time", "alert happen",
+            ]
         )
         if asks_for_alert_details and alert_ips:
             detail_parts.append(f"IPs seen in matching alerts: {', '.join(sorted(alert_ips)[:12])}.")
+        if asks_for_alert_details and alert_countries:
+            detail_parts.append(f"Countries seen in matching alerts: {', '.join(sorted(alert_countries)[:12])}.")
         if asks_for_alert_details and alert_timestamps:
             ts_sorted = sorted(alert_timestamps)
             detail_parts.append(f"Earliest: {ts_sorted[0]}. Latest: {ts_sorted[-1]}.")
@@ -1556,6 +1615,34 @@ def _format_geoip_response(geoip_result: dict) -> str:
     action = geoip_result.get("action", "ready")
     db_path = geoip_result.get("db_path")
     warning = geoip_result.get("warning")
+
+    lookups = geoip_result.get("lookups") or []
+    if lookups:
+        rendered: list[str] = []
+        for lookup in lookups[:15]:
+            ip = lookup.get("ip", "unknown")
+            if lookup.get("status") == "not_found":
+                rendered.append(f"{ip}: not found in the MaxMind database")
+                continue
+            if lookup.get("status") == "error":
+                rendered.append(f"{ip}: lookup error ({lookup.get('error', 'unknown error')})")
+                continue
+
+            geo = lookup.get("geo") or {}
+            location_parts = []
+            for field in ("city", "subdivision", "country"):
+                value = geo.get(field)
+                if value and value not in location_parts:
+                    location_parts.append(value)
+            location = ", ".join(location_parts) if location_parts else "an unknown location"
+            rendered.append(f"{ip}: {location}")
+
+        response = "Resolved GeoIP for the referenced IPs: " + "; ".join(rendered) + "."
+        if db_path:
+            response += f" Database: {db_path}."
+        if warning:
+            response += f" Warning: {warning}."
+        return response
 
     if geoip_result.get("status") == "not_found":
         response = f"No MaxMind geolocation record was found for IP {geoip_result.get('ip', 'unknown')}."

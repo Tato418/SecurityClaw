@@ -72,6 +72,155 @@ def _extract_ips_from_text(text: str) -> list[str]:
     return ips
 
 
+def _extract_ports_from_text(text: str) -> list[int]:
+    """Extract port numbers from text (patterns like 'port 443' or 'port:443')."""
+    if not text:
+        return []
+    
+    ports = set()
+    
+    # Handle compound patterns like "ports 80 and 443" or "ports: 80, 443"
+    compound_match = re.search(r'\bports?\s*:?\s*([\d\s,and]+)', text, re.IGNORECASE)
+    if compound_match:
+        port_list = compound_match.group(1)
+        # Extract all numbers from the port list
+        for num in re.findall(r'\d+', port_list):
+            port = int(num)
+            if 0 < port < 65536:
+                ports.add(port)
+    
+    # Also match individual "port NNN" patterns
+    for match in re.finditer(r'\bport\s*:?\s*(\d+)', text, re.IGNORECASE):
+        port = int(match.group(1))
+        if 0 < port < 65536:
+            ports.add(port)
+    
+    # Also match colons like ":443"
+    for match in re.finditer(r':(\d{4,5})\b', text):
+        port = int(match.group(1))
+        if 0 < port < 65536:
+            ports.add(port)
+    
+    return sorted(list(ports))
+
+
+def _extract_countries_from_text(text: str) -> list[str]:
+    """Extract country names from text."""
+    if not text:
+        return []
+    
+    # Common country names that might appear
+    countries_map = {
+        'united states': 'United States',
+        'us': 'United States',
+        'usa': 'United States',
+        'china': 'China',
+        'russia': 'Russia',
+        'uk': 'United Kingdom',
+        'united kingdom': 'United Kingdom',
+        'germany': 'Germany',
+        'india': 'India',
+        'france': 'France',
+        'japan': 'Japan',
+        'brazil': 'Brazil',
+        'canada': 'Canada',
+        'mexico': 'Mexico',
+        'australia': 'Australia',
+    }
+    
+    countries = set()
+    text_lower = text.lower()
+    
+    for country_key, country_name in countries_map.items():
+        if country_key in text_lower:
+            countries.add(country_name)
+    
+    return sorted(list(countries))
+
+
+def _fallback_plan_from_question(
+    question: str,
+    previous_results: dict | None = None
+) -> dict:
+    """
+    Fallback query planning when LLM fails: extract search parameters from question text.
+    
+    This allows the system to continue even when LLM planning fails with JSON parse errors.
+    Uses regex and heuristics to extract:
+    - Ports (from "port 443" or ":443" patterns)
+    - IPs (from IP addresses in text)
+    - Countries (from country names)
+    - Search terms (words that aren't structural)
+    - Search type (inferred from keywords)
+    
+    For follow-up questions, extracts IPs from previous results and adds them to search_terms.
+    """
+    question_lower = question.lower()
+    
+    # Extract structured data
+    ports = _extract_ports_from_text(question)
+    ips = _extract_ips_from_text(question)
+    countries = _extract_countries_from_text(question)
+    
+    # Also extract IPs from previous results if available
+    # For follow-up questions, add these directly to search_terms
+    if previous_results:
+        previous_ips = _extract_ips_from_previous_results(previous_results)
+        for ip in previous_ips:
+            if ip not in ips:
+                ips.append(ip)
+    
+    # Infer search type from keywords
+    search_type = "general"
+    if any(kw in question_lower for kw in ["alert", "signature", "et policy", "et exploit", "et info", "et drop"]):
+        search_type = "alert"
+    elif any(kw in question_lower for kw in ["traffic", "connection", "flow", "packet", "network", "port", "protocol", "happening", "activity"]):
+        search_type = "traffic"
+    elif ips or "ip" in question_lower or "country" in question_lower:
+        search_type = "ip"
+    elif any(kw in question_lower for kw in ["domain", "host", "dns"]):
+        search_type = "domain"
+    
+    # Extract key terms (remove common words and structural elements)
+    stop_words = {
+        "what", "where", "when", "why", "how", "is", "are", "was", "were", "the", "a", "an",
+        "on", "in", "at", "to", "from", "with", "by", "was", "port", "ports", "associated",
+        "traffic", "alert", "signature", "and", "or", "this", "that", "these", "those",
+        "for", "of", "this", "country", "countries", "ip", "ips", "address", "addresses",
+        "happening", "activity", "protocol", "protocols", "connection", "flow", "packet"
+    }
+    
+    search_terms = []
+    for word in question.split():
+        clean_word = word.strip('.,!?;:"\'-').lower()
+        if clean_word and clean_word not in stop_words and len(clean_word) > 2:
+            # Exclude IPs and ports
+            if not re.match(r'^\d+$', clean_word) and not _IP_PATTERN.match(clean_word):
+                search_terms.append(clean_word)
+    
+    # Remove duplicates while preserving order
+    seen = set()
+    search_terms = [t for t in search_terms if not (t in seen or seen.add(t))]
+    
+    # For IP-type searches (or when IPs are extracted), add them to search_terms
+    if (search_type == "ip" or ips) and ips:
+        # IPs become search terms for IP-specific searches
+        search_terms = ips + search_terms
+    
+    return {
+        "reasoning": f"Fallback plan (LLM planning failed): Extracted ports={ports}, countries={countries}, ips={ips}, search_type={search_type}",
+        "search_type": search_type,
+        "search_terms": search_terms,
+        "countries": countries,
+        "ports": ports,
+        "protocols": [],
+        "time_range": "now-90d",
+        "matching_strategy": "token",
+        "field_analysis": "Using fallback heuristic extraction from question text",
+        "skip_search": False,  # Important: don't skip the search
+    }
+
+
 def _extract_ips_from_previous_results(previous_results: dict) -> list[str]:
     """Extract IPs from previous skill results for follow-up questions."""
     if not previous_results:
@@ -122,6 +271,25 @@ def _question_asks_for_ip_geolocation(question: str) -> bool:
     return has_geo_intent and refers_to_prior_ips
 
 
+def _question_asks_for_followup_details(question: str) -> bool:
+    """Return True for follow-ups asking for details about previously mentioned traffic/IPs."""
+    q = str(question or "").lower()
+    # Check for follow-up patterns asking about traffic/connection details
+    asks_for_details = any(token in q for token in (
+        "what port", "which port", "what ports", 
+        "what protocol", "which protocol",
+        "traffic", "connection",
+        "associated with", "associated with this",
+        "from that", "from those", "from the"
+    ))
+    # More flexible pattern matching for previous context references
+    refers_to_prior_context = any(phrase in q for phrase in (
+        "this traffic", "these ips", "that ip", "the traffic",
+        "that connection", "that traffic", "these connections"
+    ))
+    return asks_for_details and refers_to_prior_context
+
+
 def _recover_followup_plan_from_context(
     question: str,
     query_plan: dict,
@@ -129,47 +297,93 @@ def _recover_followup_plan_from_context(
     conversation_history: list[dict],
 ) -> dict:
     """
-    Recover concrete IP criteria for follow-up country/origin questions.
+    Recover concrete IP/traffic criteria for follow-up questions from context.
 
+    Handles:
+    - Geographic follow-ups: "What countries are these IPs from?"
+    - Port/Protocol follow-ups: "What port was associated with this traffic?"
+    - Traffic detail follow-ups: "What protocols were used?"
+    
     Example:
-      - Prior answer listed IPs from an alert search
-      - User asks: "What countries are these IPs from?"
-      - LLM may return no search_terms because the current turn has only pronouns
+      - Prior answer listed IPs from an alert search (147.185.132.112, 192.168.0.16)
+      - User asks: "What countries are these IPs from?" → Recovered IPs from context
+      - User asks: "What port was associated with this traffic?" → Search for ports on recovered IPs
     """
     plan = dict(query_plan or {})
     if plan.get("search_terms") or plan.get("countries") or plan.get("ports") or plan.get("protocols"):
         return plan
 
-    if not _question_asks_for_ip_geolocation(question):
+    # Check if this is a follow-up asking for details about previously mentioned traffic
+    if _question_asks_for_ip_geolocation(question):
+        # Existing geolocation recovery logic
+        candidate_ips = _extract_ips_from_previous_results(previous_results)
+        if not candidate_ips:
+            for message in reversed(conversation_history or []):
+                content = message.get("content", "") if isinstance(message, dict) else ""
+                extracted = _extract_ips_from_text(content)
+                for ip in extracted:
+                    if ip not in candidate_ips:
+                        candidate_ips.append(ip)
+                if candidate_ips:
+                    break
+
+        if not candidate_ips:
+            return plan
+
+        recovered_ips = candidate_ips[:12]
+        reasoning_prefix = (plan.get("reasoning") or "").strip()
+        recovery_reason = f"Recovered {len(recovered_ips)} IP(s) from prior context for geographic follow-up lookup."
+
+        plan["search_type"] = "ip"
+        plan["search_terms"] = recovered_ips
+        plan["countries"] = []
+        plan["ports"] = plan.get("ports", []) if isinstance(plan.get("ports"), list) else []
+        plan["protocols"] = plan.get("protocols", []) if isinstance(plan.get("protocols"), list) else []
+        plan["matching_strategy"] = "term"
+        plan["time_range"] = plan.get("time_range") or "now-90d"
+        plan["field_analysis"] = "Using contextual IP addresses from previous results/history because the current question is a referential follow-up."
+        plan["reasoning"] = f"{reasoning_prefix} {recovery_reason}".strip()
+        return plan
+    
+    # Handle follow-ups asking about traffic details (ports, protocols, etc.)
+    if _question_asks_for_followup_details(question):
+        candidate_ips = _extract_ips_from_previous_results(previous_results)
+        if not candidate_ips:
+            for message in reversed(conversation_history or []):
+                content = message.get("content", "") if isinstance(message, dict) else ""
+                extracted = _extract_ips_from_text(content)
+                for ip in extracted:
+                    if ip not in candidate_ips:
+                        candidate_ips.append(ip)
+                if candidate_ips:
+                    break
+
+        if not candidate_ips:
+            return plan
+
+        recovered_ips = candidate_ips[:12]
+        reasoning_prefix = (plan.get("reasoning") or "").strip()
+        recovery_reason = f"Recovered {len(recovered_ips)} IP(s) from prior context for traffic detail follow-up."
+        
+        # Infer what details are being asked for from the question
+        q_lower = question.lower()
+        is_port_query = "port" in q_lower
+        is_protocol_query = "protocol" in q_lower
+        
+        # Build search focused on the recovered IPs and the requested details
+        plan["search_type"] = "traffic"
+        plan["search_terms"] = recovered_ips
+        if is_port_query:
+            plan["ports"] = []  # Empty ports means "search for any port on these IPs"
+        if is_protocol_query:
+            plan["protocols"] = []  # Empty protocols means "search for any protocol on these IPs"
+        plan["countries"] = plan.get("countries", []) if isinstance(plan.get("countries"), list) else []
+        plan["matching_strategy"] = "term"
+        plan["time_range"] = plan.get("time_range") or "now-90d"
+        plan["field_analysis"] = f"Searching traffic details on recovered IPs: {', '.join(recovered_ips[:3])}"
+        plan["reasoning"] = f"{reasoning_prefix} {recovery_reason}".strip()
         return plan
 
-    candidate_ips = _extract_ips_from_previous_results(previous_results)
-    if not candidate_ips:
-        for message in reversed(conversation_history or []):
-            content = message.get("content", "") if isinstance(message, dict) else ""
-            extracted = _extract_ips_from_text(content)
-            for ip in extracted:
-                if ip not in candidate_ips:
-                    candidate_ips.append(ip)
-            if candidate_ips:
-                break
-
-    if not candidate_ips:
-        return plan
-
-    recovered_ips = candidate_ips[:12]
-    reasoning_prefix = (plan.get("reasoning") or "").strip()
-    recovery_reason = f"Recovered {len(recovered_ips)} IP(s) from prior context for geographic follow-up lookup."
-
-    plan["search_type"] = "ip"
-    plan["search_terms"] = recovered_ips
-    plan["countries"] = []
-    plan["ports"] = plan.get("ports", []) if isinstance(plan.get("ports"), list) else []
-    plan["protocols"] = plan.get("protocols", []) if isinstance(plan.get("protocols"), list) else []
-    plan["matching_strategy"] = "term"
-    plan["time_range"] = plan.get("time_range") or "now-90d"
-    plan["field_analysis"] = "Using contextual IP addresses from previous results/history because the current question is a referential follow-up."
-    plan["reasoning"] = f"{reasoning_prefix} {recovery_reason}".strip()
     return plan
 
 
@@ -1043,6 +1257,58 @@ def _execute_explicit_query(context: dict, index: str) -> dict:
         return {"status": "error", "error": str(exc)}
 
 
+def _plan_opensearch_query_with_llm_simplified(
+    question: str,
+    llm: Any,
+) -> dict | None:
+    """
+    Attempt simplified LLM planning with a cleaner, minimal JSON prompt.
+    Called as a retry when the main planning fails.
+    
+    Returns None if this also fails, allowing fallback to heuristic extraction.
+    """
+    import json
+    
+    prompt = f"""Analyze this question and return ONLY valid JSON, no other text:
+
+Question: "{question}"
+
+Return this exact JSON structure (all fields required):
+{{
+  "search_terms": ["term1", "term2"],
+  "ports": [443, 8080],
+  "search_type": "alert|traffic|ip|general",
+  "matching_strategy": "phrase|token"
+}}
+
+Rules:
+- search_terms: Extract key words from question (exclude: "what", "port", "associated", pronouns)
+- ports: Extract numbers like "443", "8080" (must be 1-65535)
+- search_type: "alert" if mentions signatures/rules, "traffic" if mentions connections, "ip" if IP addresses, else "general"
+- matching_strategy: "phrase" for alerts, "token" for everything else
+
+Output ONLY the JSON, nothing else."""
+
+    try:
+        response = llm.complete(prompt).strip()
+        logger.debug("[%s] Simplified LLM response: %s", SKILL_NAME, response[:200])
+        
+        # Try direct parse first
+        try:
+            return json.loads(response)
+        except json.JSONDecodeError:
+            # Try extracting JSON from response
+            import re
+            m = re.search(r"\{[\s\S]*\}", response)
+            if m:
+                return json.loads(m.group())
+        
+        return None
+    except Exception as exc:
+        logger.debug("[%s] Simplified LLM also failed: %s", SKILL_NAME, exc)
+        return None
+
+
 def _plan_opensearch_query_with_llm(
     question: str,
     conversation_history: list[dict],
@@ -1189,15 +1455,23 @@ If question mentions ports, ALWAYS use "term" strategy
 
         return plan
     except Exception as exc:
-        logger.warning("[%s] LLM planning failed: %s", SKILL_NAME, exc)
-        return {
-            "reasoning": "LLM planning failed",
-            "search_type": "general",
-            "search_terms": [],
-            "countries": [],
-            "ports": [],
-            "protocols": [],
-            "time_range": "now-90d",
-            "matching_strategy": "token",
-            "skip_search": True,
-        }
+        logger.warning("[%s] LLM planning failed: %s. Attempting simplified prompt...", SKILL_NAME, exc)
+        
+        # Try simplified LLM planning with minimal JSON prompt
+        simplified_plan = _plan_opensearch_query_with_llm_simplified(question, llm)
+        if simplified_plan:
+            logger.info("[%s] Simplified LLM succeeded: %s", SKILL_NAME, 
+                       simplified_plan.get("search_type", "unknown"))
+            # Fill in any missing fields
+            simplified_plan.setdefault("reasoning", "Simplified LLM planning")
+            simplified_plan.setdefault("countries", [])
+            simplified_plan.setdefault("protocols", [])
+            simplified_plan.setdefault("time_range", "now-90d")
+            simplified_plan.setdefault("field_analysis", "Using simplified LLM planning")
+            return simplified_plan
+        
+        # If even simplified LLM fails, fall back to heuristic extraction
+        logger.warning("[%s] Simplified LLM also failed. Using fallback heuristic extraction.", SKILL_NAME)
+        fallback_plan = _fallback_plan_from_question(question, None)
+        logger.info("[%s] Fallback plan: %s", SKILL_NAME, fallback_plan.get("reasoning", "")[:100])
+        return fallback_plan

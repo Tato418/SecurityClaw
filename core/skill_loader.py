@@ -25,9 +25,12 @@ class Skill:
     instruction: str
     run: Callable[[dict], dict]
     schedule_interval_seconds: Optional[int] = None
+    schedule_cron_expr: Optional[str] = None
     metadata: dict = field(default_factory=dict)
 
     def __repr__(self) -> str:
+        if self.schedule_cron_expr:
+            return f"<Skill name={self.name!r} cron={self.schedule_cron_expr!r}>"
         return f"<Skill name={self.name!r} interval={self.schedule_interval_seconds}s>"
 
 
@@ -71,15 +74,18 @@ class SkillLoader:
                 continue
 
             interval = self._extract_interval(instruction)
+            cron_expr = self._extract_cron_expr(instruction)
             skill = Skill(
                 name=skill_dir.name,
                 instruction=instruction,
                 run=run_fn,
                 schedule_interval_seconds=interval,
+                schedule_cron_expr=cron_expr,
                 metadata={"dir": str(skill_dir)},
             )
             self._registry[skill.name] = skill
-            logger.info("Loaded skill: %s (interval=%ss)", skill.name, interval)
+            log_schedule = cron_expr if cron_expr else f"{interval}s" if interval else "manual"
+            logger.info("Loaded skill: %s (schedule=%s)", skill.name, log_schedule)
 
         return self._registry
 
@@ -127,4 +133,24 @@ class SkillLoader:
         )
         if match:
             return int(match.group(1))
+        return None
+
+    @staticmethod
+    def _extract_cron_expr(instruction: str) -> Optional[str]:
+        """
+        Parse an optional cron expression from instruction.md front-matter.
+
+        Example front-matter:
+            ---
+            schedule_cron_expr: "0 2 * * tue,fri"
+            ---
+        """
+        import re
+
+        match = re.search(
+            r'schedule_cron_expr:\s*["\']?([^"\'\n]+)["\']?', instruction
+        )
+        if match:
+            expr = match.group(1).strip()
+            return expr if expr else None
         return None

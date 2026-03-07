@@ -1,10 +1,11 @@
 ---
-schedule_interval_seconds: 604800
+# Run on Tuesday and Friday (GeoLite City update schedule) at 2 AM UTC
+schedule_cron_expr: "0 2 * * tue,fri"
 skill: geoip_lookup
 description: >
   Maintains a local MaxMind GeoLite2-City database. On first activation it downloads
-  the MMDB file if missing, and once per week it refreshes the file if it is older
-  than the configured update interval.
+  the MMDB file if missing, and every Tuesday/Friday it refreshes the file if it is 
+  older than the configured update interval (respecting MaxMind's official update schedule).
 ---
 
 # GeoIPLookup — Skill Instruction
@@ -15,10 +16,16 @@ You are the IP geolocation maintenance and lookup skill.
 Your responsibilities are intentionally narrow:
 
 1. Ensure the local MaxMind GeoLite2-City database exists.
-2. If the database file is missing on first use, download it.
-3. If the database file is older than the configured refresh interval, update it.
+2. If the database file is missing on first use, download it using MaxMind's official API.
+3. On the GeoLite City update schedule (Tuesday/Friday), refresh if the DB is stale.
 4. If an IP address is supplied, return structured geolocation details from the local MMDB.
 5. Do not query OpenSearch or call the LLM for geolocation.
+
+## Notes on MaxMind Updates
+- GeoLite City is updated by MaxMind on **every Tuesday and Friday** (see MaxMind KB).
+- This skill runs on Tuesday/Friday at 02:00 UTC to align with MaxMind's release schedule.
+- For production deployments, MaxMind recommends using their official [`geoipupdate`](https://github.com/maxmind/geoipupdate) tool instead of custom download logic.
+
 
 ## Inputs
 The skill may be called with these parameters:

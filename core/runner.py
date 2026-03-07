@@ -77,17 +77,43 @@ class Runner:
         self.scheduler.set_context_factory(self._build_context)
 
         for name, skill in self._skills.items():
-            interval = (
-                skill.schedule_interval_seconds
-                or self.DEFAULT_INTERVALS.get(name)
-                or self.cfg.get("scheduler", "heartbeat_interval_seconds", default=60)
-            )
-            self.scheduler.register(
-                name=name,
-                fn=skill.run,
-                interval_seconds=int(interval),
-                run_immediately=False,
-            )
+            if skill.schedule_cron_expr:
+                # Parse cron expression and use cron-based scheduling
+                # Format: "minute hour day month day_of_week"
+                # Example: "0 2 * * tue,fri"
+                parts = skill.schedule_cron_expr.split()
+                if len(parts) == 5:
+                    cron_kwargs = {
+                        "minute": parts[0],
+                        "hour": parts[1],
+                        "day": parts[2],
+                        "month": parts[3],
+                        "day_of_week": parts[4],
+                    }
+                    self.scheduler.register_cron(
+                        name=name,
+                        fn=skill.run,
+                        **cron_kwargs
+                    )
+                else:
+                    logger.error(
+                        "Invalid cron expression for skill %s: %s (expected: minute hour day month day_of_week)",
+                        name,
+                        skill.schedule_cron_expr,
+                    )
+            else:
+                # Use interval-based scheduling
+                interval = (
+                    skill.schedule_interval_seconds
+                    or self.DEFAULT_INTERVALS.get(name)
+                    or self.cfg.get("scheduler", "heartbeat_interval_seconds", default=60)
+                )
+                self.scheduler.register(
+                    name=name,
+                    fn=skill.run,
+                    interval_seconds=int(interval),
+                    run_immediately=False,
+                )
 
         self._print_skill_table()
 
@@ -142,13 +168,17 @@ class Runner:
     def _print_skill_table(self) -> None:
         table = Table(title="Loaded Skills", show_lines=True)
         table.add_column("Skill", style="cyan")
-        table.add_column("Interval (s)", style="magenta")
+        table.add_column("Schedule", style="magenta")
         table.add_column("Instruction Preview", style="white", max_width=60)
         for name, skill in self._skills.items():
-            interval = str(
-                skill.schedule_interval_seconds
-                or self.DEFAULT_INTERVALS.get(name, "?")
-            )
+            if skill.schedule_cron_expr:
+                schedule = f"cron: {skill.schedule_cron_expr}"
+            else:
+                interval = str(
+                    skill.schedule_interval_seconds
+                    or self.DEFAULT_INTERVALS.get(name, "?")
+                )
+                schedule = f"every {interval}s"
             preview = (skill.instruction[:80] + "…") if len(skill.instruction) > 80 else skill.instruction
-            table.add_row(name, interval, preview.replace("\n", " "))
+            table.add_row(name, schedule, preview.replace("\n", " "))
         console.print(table)

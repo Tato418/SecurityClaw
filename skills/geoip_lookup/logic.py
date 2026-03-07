@@ -5,8 +5,12 @@ Minimal MaxMind GeoIP maintenance + lookup skill.
 
 Behavior:
 - On first use, download the configured GeoLite2 MMDB if it is missing.
-- Once per week (or configured interval), refresh the MMDB if it is stale.
+- Once per Tuesday/Friday (GeoLite City schedule), refresh the MMDB if it is stale.
 - When an IP is provided, return local geolocation details from the MMDB.
+
+NOTE: This uses the direct MaxMind API endpoint. For production, consider using
+the official geoipupdate tool (https://github.com/maxmind/geoipupdate) which handles
+automatic updates, archival, and database rotation.
 """
 from __future__ import annotations
 
@@ -27,7 +31,9 @@ logger = logging.getLogger(__name__)
 SKILL_NAME = "geoip_lookup"
 ROOT_DIR = Path(__file__).parents[2]
 DEFAULT_DB_PATH = ROOT_DIR / "data" / "geoip" / "GeoLite2-City.mmdb"
+# Use official MaxMind download API endpoint
 DEFAULT_DOWNLOAD_URL = "https://download.maxmind.com/app/geoip_download"
+# Alternative endpoint: https://updates.maxmind.com
 IP_PATTERN = re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b")
 
 
@@ -71,6 +77,44 @@ def _extract_ip(parameters: dict) -> str | None:
         if _is_valid_ip(candidate):
             return candidate
     return None
+
+
+def _extract_ips(parameters: dict, previous_results: dict | None = None) -> list[str]:
+    ips: list[str] = []
+    seen: set[str] = set()
+
+    def _add(value: Any) -> None:
+        if isinstance(value, str) and _is_valid_ip(value) and value not in seen:
+            seen.add(value)
+            ips.append(value)
+
+    if isinstance(parameters, dict):
+        direct_ips = parameters.get("ips")
+        if isinstance(direct_ips, list):
+            for value in direct_ips:
+                _add(value)
+
+        direct_ip = _extract_ip(parameters)
+        if direct_ip:
+            _add(direct_ip)
+
+    previous_results = previous_results or {}
+    os_result = previous_results.get("opensearch_querier") or {}
+    if isinstance(os_result, dict):
+        for row in os_result.get("results", []) or []:
+            if not isinstance(row, dict):
+                continue
+            for value in (
+                row.get("src_ip"),
+                row.get("dest_ip"),
+                row.get("source.ip"),
+                row.get("destination.ip"),
+                row.get("source", {}).get("ip") if isinstance(row.get("source"), dict) else None,
+                row.get("destination", {}).get("ip") if isinstance(row.get("destination"), dict) else None,
+            ):
+                _add(value)
+
+    return ips
 
 
 def _is_valid_ip(value: str) -> bool:
@@ -209,6 +253,7 @@ def run(context: dict) -> dict:
     parameters = context.get("parameters", {}) or {}
     cfg = context.get("config")
     memory = context.get("memory")
+    previous_results = context.get("previous_results", {}) or {}
     force_update = bool(parameters.get("force_update", False))
     checked_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
@@ -220,7 +265,7 @@ def run(context: dict) -> dict:
         logger.error("[%s] Failed to ensure GeoIP DB: %s", SKILL_NAME, exc)
         return {"status": "error", "error": str(exc), "checked_at": checked_at}
 
-    ip = _extract_ip(parameters)
+    ips = _extract_ips(parameters, previous_results=previous_results)
     result = {
         "status": "ok",
         "action": maintenance.get("action", "ready"),
@@ -230,13 +275,25 @@ def run(context: dict) -> dict:
     if maintenance.get("warning"):
         result["warning"] = maintenance["warning"]
 
-    if ip:
+    if len(ips) == 1:
+        ip = ips[0]
         try:
             lookup = _lookup_ip(settings["db_path"], ip)
             result.update(lookup)
         except Exception as exc:
             logger.error("[%s] GeoIP lookup failed for %s: %s", SKILL_NAME, ip, exc)
             return {"status": "error", "error": str(exc), "ip": ip, "checked_at": checked_at}
+    elif ips:
+        lookups: list[dict[str, Any]] = []
+        for ip in ips[:25]:
+            try:
+                lookup = _lookup_ip(settings["db_path"], ip)
+            except Exception as exc:
+                logger.error("[%s] GeoIP lookup failed for %s: %s", SKILL_NAME, ip, exc)
+                lookup = {"status": "error", "ip": ip, "error": str(exc)}
+            lookups.append(lookup)
+        result["ips"] = ips[:25]
+        result["lookups"] = lookups
 
     if memory and result.get("action") in {"downloaded", "updated"}:
         memory.add_decision(
