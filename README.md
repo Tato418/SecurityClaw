@@ -18,9 +18,12 @@ A modular, skill-based autonomous Security Operations Center (SOC) agent that mo
 
 ### 0. Prerequisites
 
-- Python 3.11+
-- OpenSearch or Elasticsearch (or use mock for testing)
-- Ollama or OpenAI API key
+- **Python 3.11+** (check with `python --version`)
+- **Git** (for cloning the repo)
+- **OpenSearch 2.x or Elasticsearch 8.x** (or use mock for testing)
+- **Ollama or OpenAI API key** (for LLM provider)
+- **4GB+ RAM** (recommended for Ollama models; 8GB+ for production)
+- **~2GB disk space** for models and vector indices
 
 ### 0.5 Quick Ollama Setup
 
@@ -35,15 +38,49 @@ Quick setup:
 curl -fsSL https://ollama.com/install.sh | sh
 ollama serve
 ollama pull qwen2.5:7b-instruct-q4_K_M
-ollama pull tinyllama
+ollama pull nomic-embed-text:latest
 ```
 
-### 1. Install Dependencies
+### 1. Create Virtual Environment & Install Dependencies
 
+**Step 1a**: Clone the repository
 ```bash
+git clone https://github.com/SecurityClaw/SecurityClaw.git
 cd SecurityClaw
-.venv/bin/pip install -r requirements.txt
-# or: pipenv install --dev
+```
+
+**Step 1b**: Create a Python virtual environment
+```bash
+# Using venv (built-in)
+python3.11 -m venv .venv
+
+# Or using virtualenv (if installed)
+virtualenv .venv
+```
+
+**Step 1c**: Activate the virtual environment
+```bash
+# On Linux/macOS
+source .venv/bin/activate
+
+# On Windows (PowerShell)
+.venv\Scripts\Activate.ps1
+
+# On Windows (Command Prompt)
+.venv\Scripts\activate.bat
+```
+
+**Step 1d**: Install Python dependencies
+```bash
+pip install -r requirements.txt
+
+# Or using Pipenv (if you prefer):
+pipenv install --dev
+```
+
+**Verify installation**:
+```bash
+python -c "import main; import core; print('✓ Dependencies OK')"
 ```
 
 ### 2. Interactive Onboarding
@@ -331,6 +368,103 @@ OLLAMA_BASE_URL=http://localhost:11434
 # Set logging level
 .venv/bin/python main.py --log-level DEBUG run
 ```
+
+---
+
+## Web Interface
+
+### Starting the Web Server
+
+The web interface provides a modern chat-based UI for interacting with SecurityClaw skills and viewing reasoning steps.
+
+```bash
+# Activate virtual environment first
+source .venv/bin/activate  # or: .venv\Scripts\activate on Windows
+
+# Start the web server + backend API + scheduler
+python main.py service
+```
+
+**Expected output**:
+```
+[INFO] Starting web server and API...
+[INFO] Frontend available at: http://localhost:3000
+[INFO] API backend available at: http://localhost:5000/api
+[INFO] Scheduler running in background
+[INFO] Press Ctrl+C to stop
+```
+
+### Web Interface Features
+
+**Chat Interface** (http://localhost:3000)
+- 💬 **Real-time chat**: Send questions and receive answers from SecurityClaw skills
+- 🧠 **Reasoning steps**: View LLM reasoning and decision-making process
+- 📋 **Conversation history**: Browse and manage past conversations
+- 🎯 **Skill dispatch**: Manually trigger skills (anomaly_triage, threat_analyst, etc.)
+- 📊 **Memory view**: Monitor the agent's working memory and findings
+
+**API Endpoints** (http://localhost:5000/api)
+- `GET /api/status` — Agent status and memory summary
+- `POST /api/chat/stream` — Stream chat responses
+- `GET /api/conversations` — List conversation history
+- `DELETE /api/conversations/{id}` — Delete a conversation
+- `GET /api/skills` — List available skills
+- `POST /api/skills/{name}/dispatch` — Manually trigger a skill
+- `GET /api/config` (read-only) — View masked configuration
+
+### Accessing the Web UI
+
+**Local access** (single machine):
+- Open your browser to: **http://localhost:3000**
+
+**Remote access** (from another machine):
+1. Find the server's IP address:
+   ```bash
+   hostname -I        # Linux
+   ipconfig            # Windows
+   ifconfig            # macOS
+   ```
+
+2. Access from remote machine (replace `SERVER_IP` with actual IP):
+   ```
+   http://SERVER_IP:3000
+   ```
+   - Ensure firewall allows port 3000/5000 traffic
+   - For production, use HTTPS and set up reverse proxy (nginx/Apache)
+
+### Example: Running Headless (Server Only)
+
+If you only want the API without opening a browser:
+
+```bash
+# Start server
+python main.py service &
+
+# In another terminal, query the API
+curl http://localhost:5000/api/status
+
+# Or use the CLI in the main terminal
+python main.py dispatch threat_analyst
+```
+
+### Troubleshooting Web Server
+
+**"Port 3000 already in use"**
+```bash
+# Kill the process using port 3000
+lsof -ti:3000 | xargs kill -9     # Linux/macOS
+netstat -ano | findstr :3000       # Windows
+```
+
+**"Cannot connect to API"**
+- Verify backend is running: `curl http://localhost:5000/api/status`
+- Check firewall rules
+- Look for errors in the main terminal
+
+**"Chat not responding"**
+- Check LLM availability (Ollama running? OpenAI key valid?)
+- View logs: `python main.py --log-level DEBUG service`
+- Check config.yaml for correct provider settings
 
 ---
 
