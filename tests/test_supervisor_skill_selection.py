@@ -37,7 +37,7 @@ class TestSupervisorRoutingRules:
             {"name": "fields_querier", "description": "Field schema discovery from local field catalog"},
             {"name": "rag_querier", "description": "Legacy RAG log search (deprecated, kept for compat)"},
             {"name": "opensearch_querier", "description": "Direct log search"},
-            {"name": "anomaly_watcher", "description": "Anomaly detection"},
+            {"name": "anomaly_triage", "description": "Anomaly detection"},
             {"name": "threat_analyst", "description": "IP/domain reputation and threat intelligence"},
             {"name": "network_baseliner", "description": "Baseline creation"},
             {"name": "fields_baseliner", "description": "Field catalog builder"},

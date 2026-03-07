@@ -74,7 +74,7 @@ Each skill declares what it CAN and CANNOT answer:
 - **Good for:** Explicit: "Refresh field catalog" "Rebuild field schema"
 - **Bad for:** Auto-routing — explicit-only skill
 
-### anomaly_watcher
+### anomaly_triage
 - **CAN:** Detect and enrich anomalies in real-time, flag deviations from baseline
 - **CANNOT:** Explain why something is normal, provide historical context
 - **Good for:** "What anomalies detected?" "Anything suspicious?"

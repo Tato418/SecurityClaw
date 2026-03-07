@@ -99,12 +99,12 @@ class TestNetworkBaseliner:
 # AnomalyWatcher
 # ──────────────────────────────────────────────────────────────────────────────
 
-class TestAnomalyWatcher:
+class TestAnomalyTriage:
     def test_returns_ok_with_no_findings(self, runner_context):
         """If no findings match, should return ok with new_findings=0."""
         import importlib
         from tests.mock_opensearch import MockDBConnector
-        logic = importlib.import_module("skills.anomaly_watcher.logic")
+        logic = importlib.import_module("skills.anomaly_triage.logic")
         ctx = {**runner_context, "db": MockDBConnector()}
         result = logic.run(ctx)
         assert result["status"] == "ok"
@@ -113,7 +113,7 @@ class TestAnomalyWatcher:
     def test_enriches_high_score_findings(self, runner_context, seeded_db):
         """High-score findings should be enriched and returned."""
         import importlib
-        logic = importlib.import_module("skills.anomaly_watcher.logic")
+        logic = importlib.import_module("skills.anomaly_triage.logic")
         # Reset cursor so all findings are "new"
         logic._last_poll_epoch_ms = None
         result = logic.run(runner_context)
@@ -125,7 +125,7 @@ class TestAnomalyWatcher:
     def test_escalates_critical_findings(self, runner_context, seeded_db):
         """CRITICAL findings must appear in the escalation queue."""
         import importlib
-        logic = importlib.import_module("skills.anomaly_watcher.logic")
+        logic = importlib.import_module("skills.anomaly_triage.logic")
         logic._last_poll_epoch_ms = None
         result = logic.run(runner_context)
 
@@ -138,7 +138,7 @@ class TestAnomalyWatcher:
     def test_writes_findings_to_memory(self, runner_context, seeded_db):
         """Enriched findings should appear in Open Findings."""
         import importlib
-        logic = importlib.import_module("skills.anomaly_watcher.logic")
+        logic = importlib.import_module("skills.anomaly_triage.logic")
         logic._last_poll_epoch_ms = None
         result = logic.run(runner_context)
 
@@ -148,13 +148,13 @@ class TestAnomalyWatcher:
 
     def test_skips_without_db(self, runner_context):
         import importlib
-        logic = importlib.import_module("skills.anomaly_watcher.logic")
+        logic = importlib.import_module("skills.anomaly_triage.logic")
         result = logic.run({**runner_context, "db": None})
         assert result["status"] == "skipped"
 
     def test_bare_enrich_fallback(self):
         """_bare_enrich should work without an LLM."""
-        from skills.anomaly_watcher.logic import _bare_enrich, _score_to_severity
+        from skills.anomaly_triage.logic import _bare_enrich, _score_to_severity
         raw = {
             "detector_id": "test-det",
             "anomaly_score": 0.95,
@@ -166,7 +166,7 @@ class TestAnomalyWatcher:
         assert "description" in result
 
     def test_score_to_severity_mapping(self):
-        from skills.anomaly_watcher.logic import _score_to_severity
+        from skills.anomaly_triage.logic import _score_to_severity
         assert _score_to_severity(0.99) == "CRITICAL"
         assert _score_to_severity(0.88) == "HIGH"
         assert _score_to_severity(0.75) == "MEDIUM"
@@ -175,7 +175,7 @@ class TestAnomalyWatcher:
     def test_cursor_advances_after_poll(self, runner_context, seeded_db):
         """After a poll, _last_poll_epoch_ms should be updated."""
         import importlib
-        logic = importlib.import_module("skills.anomaly_watcher.logic")
+        logic = importlib.import_module("skills.anomaly_triage.logic")
         logic._last_poll_epoch_ms = None
         logic.run(runner_context)
         assert logic._last_poll_epoch_ms is not None

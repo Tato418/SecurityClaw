@@ -47,14 +47,30 @@ This launches an interactive CLI that will ask you about:
 - Writes to `.env` (credentials)
 - Resets the configuration singleton so changes take effect immediately
 
+**Phase 4: External Threat Intelligence (Optional)**
+- Setup external reputation APIs (AbuseIPDB, AlienVault OTX, VirusTotal, Talos)
+- Saves API keys to `.env`
+
+**Phase 5: Skill-Specific Variables (Optional)**
+- Scans all skills in `/skills` for required environment variables
+- Prompts for any missing variables declared in skill `manifest.yaml`
+- Example: `threat_analyst` needs optional API keys; `geoip_lookup` needs MaxMind license key
+- Can skip now and configure later by re-running `python main.py onboard`
+
 ### Step 2: Verify Configuration
 
 After onboarding, view what was saved:
 
 ```bash
 cat config.yaml     # DB and LLM provider settings
-# .env contains secrets — verify keys exist, but do not paste or commit it.
+cat .env            # Secrets (core and skill-specific variables)
 ```
+
+The `.env` file contains:
+- Database credentials (optional)
+- LLM credentials (OpenAI API key, Ollama base URL)
+- External threat intelligence API keys (AbuseIPDB, AlienVault, VirusTotal, Talos)
+- Skill-specific variables (MaxMind license, custom API tokens, etc.)
 
 ### Step 3: List Available Skills
 
@@ -64,12 +80,41 @@ cat config.yaml     # DB and LLM provider settings
 
 Output example:
 ```
-  anomaly_watcher — every 60s
+  anomaly_triage — every 60s
   network_baseliner — every 21600s
   threat_analyst — every 300s
+  geoip_lookup — manual
 ```
 
-### Step 4: Start the Agent
+Each skill declares:
+- Its **schedule** (interval or manual)
+- Its **required variables** in `manifest.yaml` (checked on first chat)
+
+### Step 4: Start the Chat
+
+```bash
+.venv/bin/python main.py chat
+```
+
+**First chat startup**: SecurityClaw will check for any missing skill-specific variables and prompt you to configure them. This includes:
+- MaxMind license key (for `geoip_lookup`)
+- Threat intelligence API keys (for `threat_analyst`)
+- Any custom variables declared by new or custom skills
+
+You can:
+1. **Configure now** — Enter values interactively
+2. **Skip** — Configure later by re-running `python main.py onboard`
+
+Once in chat, ask questions like:
+- "What's the threat level for IP 192.168.1.100?"
+- "Create a baseline for normal traffic patterns"
+- "Compare recent activity to baseline"
+
+The agent will automatically route your question to the appropriate skill(s).
+
+### Step 5: (Optional) Run the Background Agent
+
+For automated anomaly detection and analysis:
 
 ```bash
 .venv/bin/python main.py run
@@ -81,10 +126,11 @@ The agent will:
 - Poll OpenSearch for logs and anomaly findings
 - Build RAG context from normal behavior
 - Issue threat verdicts using the LLM
+- Update SITUATION.md with findings
 
 ### Feature Maturity Notes
 
-- **anomaly_watcher** — still in progress for broader real-environment validation.
+- **anomaly_triage** — still in progress for broader real-environment validation.
 - **forensic_examiner** — still in progress for broader real-environment validation.
 - **baseline_querier** — still in progress and not yet publication-hardened.
 
@@ -131,9 +177,55 @@ OPENAI_API_KEY=<your-openai-api-key>
 | `.venv/bin/python main.py onboard` | Interactive configuration wizard |
 | `.venv/bin/python main.py run` | Start the full agent (foreground) |
 | `.venv/bin/python main.py list-skills` | List discovered skills and intervals |
-| `.venv/bin/python main.py dispatch <skill>` | Fire a skill once (e.g., `anomaly_watcher`) |
+| `.venv/bin/python main.py dispatch <skill>` | Fire a skill once (e.g., `anomaly_triage`) |
 | `.venv/bin/python main.py status` | Print current SITUATION.md |
 | `.venv/bin/python main.py --log-level DEBUG run` | Start with debug logging |
+
+---
+
+## Skill-Specific Variables
+
+SecurityClaw automatically discovers and prompts for variables that individual skills require. This enables:
+
+1. **Dynamic Discovery** — Each skill can declare required variables in its `manifest.yaml`
+2. **First-Chat Onboarding** — Missing variables are detected when you run `python main.py chat`
+3. **Selective Configuration** — Only configure variables for skills you plan to use
+4. **Easy Updates** — Re-run `python main.py onboard` to add more skill variables
+
+### Example Skill Requirements
+
+**threat_analyst** (optional API keys for enrichment):
+```
+ABUSEIPDB_API_KEY         — IP abuse reputation scoring
+ALIENVAULT_API_KEY        — Threat intelligence pulses
+VIRUSTOTAL_API_KEY        — Malware detection
+TALOS_CLIENT_ID           — Cisco enterprise intelligence
+TALOS_CLIENT_SECRET       — Cisco enterprise intelligence
+```
+
+**geoip_lookup** (required):
+```
+MAXMIND_LICENSE_KEY       — Download GeoIP database (required)
+```
+
+### Custom Skills
+
+If you create a **new skill**, declare its required variables in the skill's `manifest.yaml`:
+
+```yaml
+name: my_custom_skill
+description: "Does something special"
+# ... other metadata ...
+
+required_env_vars:
+  - name: MY_API_KEY
+    description: "API key for my external service"
+    env_key: MY_API_KEY
+    optional: false       # Set to true for optional variables
+    is_secret: true       # Hides input in CLI prompts
+```
+
+On next `python main.py onboard` or `python main.py chat`, SecurityClaw will detect and prompt for `MY_API_KEY`.
 
 ---
 

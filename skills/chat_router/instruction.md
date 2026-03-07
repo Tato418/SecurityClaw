@@ -21,7 +21,7 @@ The SOC agent has these security analysis skills:
 - **fields_baseliner**: Scans logs and catalogs all available field names, types, and example values. Explicit-only — only run when user specifically asks to refresh/rebuild the field catalog.
 - **baseline_querier**: Searches behavioral RAG baselines and raw logs to answer questions about network activity, traffic patterns, alerts, and log content.
 - **fields_querier**: Answers questions about field schema (which field holds IP addresses, what fields exist, field names for specific data types). Reads from local field catalog — no OpenSearch needed.
-- **anomaly_watcher**: Monitors and enriches anomaly detection findings in real-time
+- **anomaly_triage**: Monitors and enriches anomaly detection findings (triage specialist)
 - **threat_analyst**: Analyzes security findings using RAG context to determine threat level
 - **forensic_examiner**: Reconstructs incident timelines by linking DNS queries, network flows, and alerts (±5 minutes around incident)
 
@@ -73,7 +73,7 @@ Q: "Generate a new network baseline"
 ### Multi-Skill Workflows
 ```
 Q: "Are there anomalies and what do they mean?"
-→ Use: [anomaly_watcher, threat_analyst]
+→ Use: [anomaly_triage, threat_analyst]
 → First find anomalies, then analyze threats with context
 
 Q: "Compare current activity to baseline"
@@ -147,7 +147,7 @@ Q: "Give me a full security report"
 Response:
 {
   "reasoning": "Check recent anomalies then analyze with threat perspective",
-  "skills": ["anomaly_watcher", "threat_analyst"],
+  "skills": ["anomaly_triage", "threat_analyst"],
   "parameters": {}
 }
 ```

@@ -231,6 +231,34 @@ def onboard():
     # Create SITUATION.md if it doesn't exist
     _create_situation_file()
 
+    # ──────────────────────────────────────────────────────────────────────────
+    # Phase 5: Skill Variable Configuration (Optional)
+    # ──────────────────────────────────────────────────────────────────────────
+    console.print("\n[bold green]Step 5: Skill Configuration (Optional)[/]\n")
+    from core.skill_onboarding import discover_skill_requirements, prompt_for_skill_variables, _write_env_vars
+    
+    skill_requirements = discover_skill_requirements()
+    if skill_requirements:
+        console.print("[dim]Some skills require additional configuration variables:[/]\n")
+        for skill_name, var_specs in skill_requirements.items():
+            console.print(f"  • {skill_name}")
+            for var_name, var_spec in var_specs.items():
+                optional_label = "[optional]" if var_spec.get("optional") else "[required]"
+                console.print(f"    - {var_name} {optional_label}")
+        
+        configure_skills = Confirm.ask("\nConfigure skill variables now?", default=False)
+        if configure_skills:
+            # Prompt for all variables
+            collected = prompt_for_skill_variables(skill_requirements)
+            if collected:
+                _write_env_vars(collected)
+                console.print("[green]✓ Skill variables saved to .env[/]")
+        else:
+            console.print("[dim]You can configure these later by running:[/]")
+            console.print("  [yellow]python main.py onboard[/]\n")
+    else:
+        console.print("[dim]No skill-specific variables required.[/]\n")
+
     console.print("[green bold]✓ Configuration complete![/]")
     console.print("\n[cyan]You can now run:[/]")
     console.print("  [yellow]python main.py run[/]              # Start the agent")
@@ -300,6 +328,10 @@ def chat():
         get_context_summary,
         list_conversations,
     )
+    from core.skill_onboarding import ensure_skill_variables_onboarded
+    
+    # Ensure all skill variables are configured on first chat
+    ensure_skill_variables_onboarded()
     from core.skill_loader import SkillLoader
 
     cfg = Config()

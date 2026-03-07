@@ -1,5 +1,5 @@
 """
-skills/anomaly_watcher/logic.py
+skills/anomaly_triage/logic.py
 
 Polls the anomaly detection index every minute.
 Enriches raw findings with LLM descriptions and queues them
@@ -23,7 +23,7 @@ from typing import Optional
 logger = logging.getLogger(__name__)
 
 INSTRUCTION_PATH = Path(__file__).parent / "instruction.md"
-SKILL_NAME = "anomaly_watcher"
+SKILL_NAME = "anomaly_triage"
 
 # In-process last-seen cursor (persists across scheduler ticks for the
 # lifetime of the process; production would persist this to disk/DB).

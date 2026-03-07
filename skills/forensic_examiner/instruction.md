@@ -103,7 +103,7 @@ The narrative explains:
 - **network_baseliner**: *Creates* field documentation → stored in RAG
 - **baseline_querier**: Searches behavioral baselines and raw logs (traffic, alerts, patterns)
 - **forensic_examiner**: Answers "what happened?" for specific incidents *(this skill)*
-- **anomaly_watcher**: Detects incidents
+- **anomaly_triage**: Detects incidents
 - **threat_analyst**: Analyzes the forensic findings
 
 ## When to Invoke

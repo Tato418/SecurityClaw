@@ -40,3 +40,10 @@ returns:
   - city
   - timezone
   - db maintenance status
+
+required_env_vars:
+  - name: MAXMIND_LICENSE_KEY
+    description: "MaxMind License Key (required—for GeoIP database downloads)"
+    env_key: MAXMIND_LICENSE_KEY
+    optional: false
+    is_secret: true

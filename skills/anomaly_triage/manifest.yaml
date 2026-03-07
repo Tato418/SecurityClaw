@@ -1,5 +1,6 @@
-name: anomaly_watcher
+name: anomaly_triage
 description: >
+  Anomaly triage specialist. Monitors and enriches anomaly detection findings in real-time.
   Monitors and enriches anomaly detection findings in real-time.
   Flags deviations from baseline behavior patterns.
 

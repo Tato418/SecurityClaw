@@ -101,7 +101,7 @@ SECONDARY ROUTING RULES:
   use threat_analyst for external reputation checks.
 - If asking for threat intel PLUS concrete evidence from logs/alerts (which IPs, when it happened, which host, timestamps),
   use opensearch_querier first to gather evidence, then threat_analyst.
-- If asking for DEEPER ANALYSIS of found anomalies, use anomaly_watcher or threat_analyst.
+- If asking for DEEPER ANALYSIS of found anomalies, use anomaly_triage or threat_analyst.
 - Skills can be chained if needed (e.g., opensearch_querier then threat_analyst).
 
 KEY PRIORITY: Use opensearch_querier FIRST for direct log search questions.
@@ -712,7 +712,8 @@ def orchestrate_with_supervisor(
         "skills": list(aggregated_results.keys()),
         "parameters": {"question": user_question},
     }
-    response = format_response(user_question, final_routing, aggregated_results, llm, cfg)
+    response = format_response(user_question, final_routing, aggregated_results, llm, cfg, 
+                             available_skills=available_skills)
 
     return {
         "response": response,
@@ -1125,6 +1126,7 @@ def format_response(
     skill_results: dict,
     llm: Any,
     cfg: Any = None,  # Pass config for anti-hallucination setting
+    available_skills: list[dict] | None = None,
 ) -> str:
     """
     Format skill results into a natural language response with thinking-action-reflection loop.
@@ -1136,7 +1138,13 @@ def format_response(
       4. ANTI-HALLUCINATION: Recheck before presenting
     """
     if not routing_decision.get("skills"):
-        return "I couldn't determine which skills would help with that question. Available skills are: network_baseliner, anomaly_watcher, threat_analyst."
+        # Generate dynamic list of available skills instead of hardcoded fallback
+        if available_skills:
+            skill_names = [s.get("name") for s in available_skills if s.get("name")]
+            skills_str = ", ".join(sorted(skill_names))
+        else:
+            skills_str = "network_baseliner, anomaly_triage, threat_analyst"
+        return f"I couldn't determine which skills would help with that question. Available skills are: {skills_str}."
     
     # ── FORENSIC-FIRST RENDERING ────────────────────────────────────────────
     forensic_result = skill_results.get("forensic_examiner", {})

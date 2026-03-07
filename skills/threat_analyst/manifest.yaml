@@ -39,3 +39,34 @@ returns:
   - verdicts
   - confidence_scores
   - source_apis
+
+required_env_vars:
+  - name: ABUSEIPDB_API_KEY
+    description: "AbuseIPDB API Key (optional—for IP reputation)"
+    env_key: ABUSEIPDB_API_KEY
+    optional: true
+    is_secret: true
+  
+  - name: ALIENVAULT_API_KEY
+    description: "AlienVault OTX API Key (optional—for threat pulses)"
+    env_key: ALIENVAULT_API_KEY
+    optional: true
+    is_secret: true
+  
+  - name: VIRUSTOTAL_API_KEY
+    description: "VirusTotal API Key (optional—for malware detection)"
+    env_key: VIRUSTOTAL_API_KEY
+    optional: true
+    is_secret: true
+  
+  - name: TALOS_CLIENT_ID
+    description: "Cisco Talos Client ID (optional—for enterprise intelligence)"
+    env_key: TALOS_CLIENT_ID
+    optional: true
+    is_secret: true
+  
+  - name: TALOS_CLIENT_SECRET
+    description: "Cisco Talos Client Secret (optional—for enterprise intelligence)"
+    env_key: TALOS_CLIENT_SECRET
+    optional: true
+    is_secret: true

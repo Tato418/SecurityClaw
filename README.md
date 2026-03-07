@@ -74,7 +74,7 @@ In another terminal:
 ```bash
 .venv/bin/python main.py status          # Print SITUATION.md
 .venv/bin/python main.py list-skills     # Show loaded skills and intervals
-.venv/bin/python main.py dispatch <skill>  # Fire a skill manually (e.g., anomaly_watcher)
+.venv/bin/python main.py dispatch <skill>  # Fire a skill manually (e.g., anomaly_triage)
 ```
 
 ---
@@ -104,7 +104,7 @@ SecurityClaw/
 │   ├── network_baseliner/     # 6h: Aggregate logs → RAG vectors
 │   │   ├── logic.py
 │   │   └── instruction.md
-│   ├── anomaly_watcher/       # 1m: Poll AD findings → enrich → escalate
+│   ├── anomaly_triage/        # 1m: Poll AD findings → enrich → escalate
 │   │   ├── logic.py
 │   │   └── instruction.md
 │   └── threat_analyst/        # 5m: RAG reasoning → verdict (TRUE_THREAT/FALSE_POSITIVE)
@@ -296,7 +296,7 @@ OLLAMA_BASE_URL=http://localhost:11434
 .venv/bin/python main.py run
 
 # Fire one skill immediately
-.venv/bin/python main.py dispatch anomaly_watcher
+.venv/bin/python main.py dispatch anomaly_triage
 .venv/bin/python main.py dispatch network_baseliner
 .venv/bin/python main.py dispatch threat_analyst
 

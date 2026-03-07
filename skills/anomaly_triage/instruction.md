@@ -1,13 +1,13 @@
 ---
 schedule_interval_seconds: 60
-skill: AnomalyWatcher
+skill: AnomalyTriage
 description: >
   Polls the anomaly detection index every minute for new findings.
   Enriches each finding with context metadata and hands off to
   ThreatAnalyst for verdict.
 ---
 
-# AnomalyWatcher — LLM Instruction
+# AnomalyTriage — LLM Instruction
 
 ## Role
 You are an anomaly triage specialist.  Given a raw Anomaly Detection
